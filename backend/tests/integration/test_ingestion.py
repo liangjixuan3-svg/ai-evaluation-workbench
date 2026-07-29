@@ -10,6 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session
@@ -103,3 +104,26 @@ def test_simulated_ingestion_route_uses_the_overridden_session(session: Session)
 
     assert response.status_code == 200
     assert response.json() == {"inserted": 1, "skipped": 0}
+
+
+def test_ingestion_rolls_back_failed_write_before_reusing_the_session(session: Session) -> None:
+    failed_item = fixture_items()[0]
+
+    with pytest.raises(IntegrityError):
+        ingest_conversations(session, str(uuid4()), [failed_item])
+
+    source = DataSource(name=f"recovered-{uuid4().hex}", kind="simulated")
+    session.add(source)
+    session.commit()
+    summary = ingest_conversations(session, source.id, [fixture_items()[1]])
+
+    assert summary.inserted == 1
+    assert (
+        session.scalar(
+            select(Conversation).where(
+                Conversation.data_source_id == source.id,
+                Conversation.external_id == "logistics-001",
+            )
+        )
+        is not None
+    )
