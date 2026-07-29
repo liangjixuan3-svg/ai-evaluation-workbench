@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, delete, event, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app.alerts.models import Alert, AlertResult, AlertSignalReceipt
@@ -437,19 +437,13 @@ def test_concurrent_exact_signal_replay_is_a_single_atomic_mutation(engine) -> N
         window_ended_at=datetime(2026, 7, 30, 1, tzinfo=UTC),
         merge_window=timedelta(hours=6),
     )
-    receipt_barrier = Barrier(2)
+    start_barrier = Barrier(2)
     race_engine = engine.execution_options(isolation_level="READ COMMITTED")
-
-    def synchronize_receipt_insert(*args: object) -> None:
-        statement = args[2]
-        if "INSERT INTO alert_signal_receipts" in str(statement):
-            receipt_barrier.wait(timeout=5)
-
-    event.listen(race_engine, "before_cursor_execute", synchronize_receipt_insert)
     try:
 
         def merge_in_separate_session() -> str:
             with Session(race_engine, expire_on_commit=False) as worker_session:
+                start_barrier.wait(timeout=5)
                 return merge_alert(worker_session, signal).id
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -469,14 +463,18 @@ def test_concurrent_exact_signal_replay_is_a_single_atomic_mutation(engine) -> N
         assert receipts[0].alert_id == alerts[0].id
         assert {link.evaluation_result_id for link in links} == set(result_ids)
     finally:
-        event.remove(race_engine, "before_cursor_execute", synchronize_receipt_insert)
         with Session(engine) as cleanup_session:
-            alert_ids = select(Alert.id).where(Alert.merge_key == signal.merge_key)
-            cleanup_session.execute(delete(AlertResult).where(AlertResult.alert_id.in_(alert_ids)))
-            cleanup_session.execute(
-                delete(AlertSignalReceipt).where(AlertSignalReceipt.alert_id.in_(alert_ids))
+            alert_ids = list(
+                cleanup_session.scalars(select(Alert.id).where(Alert.merge_key == signal.merge_key))
             )
-            cleanup_session.execute(delete(Alert).where(Alert.id.in_(alert_ids)))
+            if alert_ids:
+                cleanup_session.execute(
+                    delete(AlertResult).where(AlertResult.alert_id.in_(alert_ids))
+                )
+                cleanup_session.execute(
+                    delete(AlertSignalReceipt).where(AlertSignalReceipt.alert_id.in_(alert_ids))
+                )
+                cleanup_session.execute(delete(Alert).where(Alert.id.in_(alert_ids)))
             cleanup_session.execute(
                 delete(EvaluationResult).where(EvaluationResult.run_id == run_id)
             )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -9,6 +11,7 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -45,6 +48,21 @@ def _alembic_config(database_url: str) -> Config:
     config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
     return config
+
+
+@contextmanager
+def _temporary_mysql_database(database_url: str) -> Iterator[str]:
+    source_url = make_url(database_url)
+    database_name = f"task6_migration_{uuid4().hex}"
+    admin_engine = create_engine(source_url.set(database=None), isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4"))
+        yield source_url.set(database=database_name).render_as_string(hide_password=False)
+    finally:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"DROP DATABASE IF EXISTS `{database_name}`"))
+        admin_engine.dispose()
 
 
 def _seed_0001_legacy_rows(engine) -> dict[str, str]:
@@ -206,79 +224,88 @@ def _seed_0001_legacy_rows(engine) -> dict[str, str]:
 
 
 def test_0002_backfills_legacy_replay_keys_and_enforces_them() -> None:
-    database_url = os.environ["TEST_DATABASE_URL"]
-    engine = create_engine(database_url, pool_pre_ping=True)
-    config = _alembic_config(database_url)
+    shared_database_url = os.environ["TEST_DATABASE_URL"]
     original_url = settings.database_url
-    settings.database_url = database_url
-    try:
-        command.downgrade(config, "0001")
-        engine.dispose()
-        identifiers = _seed_0001_legacy_rows(engine)
+    with _temporary_mysql_database(shared_database_url) as database_url:
+        engine = create_engine(database_url, pool_pre_ping=True)
+        config = _alembic_config(database_url)
+        settings.database_url = database_url
+        try:
+            command.upgrade(config, "0001")
+            engine.dispose()
+            identifiers = _seed_0001_legacy_rows(engine)
 
-        command.upgrade(config, "0002")
-        engine.dispose()
+            command.upgrade(config, "0002")
+            engine.dispose()
 
-        inspector = inspect(engine)
-        cluster_columns = {
-            column["name"]: column for column in inspector.get_columns("badcase_clusters")
-        }
-        suggestion_columns = {
-            column["name"]: column for column in inspector.get_columns("root_cause_suggestions")
-        }
-        assert cluster_columns["grouping_key"]["nullable"] is False
-        assert suggestion_columns["evaluation_result_id"]["nullable"] is False
-        assert suggestion_columns["provider"]["nullable"] is False
-        assert suggestion_columns["model"]["nullable"] is False
+            inspector = inspect(engine)
+            cluster_columns = {
+                column["name"]: column for column in inspector.get_columns("badcase_clusters")
+            }
+            suggestion_columns = {
+                column["name"]: column for column in inspector.get_columns("root_cause_suggestions")
+            }
+            assert cluster_columns["grouping_key"]["nullable"] is False
+            assert suggestion_columns["evaluation_result_id"]["nullable"] is False
+            assert suggestion_columns["provider"]["nullable"] is False
+            assert suggestion_columns["model"]["nullable"] is False
 
-        with Session(engine, expire_on_commit=False) as session:
-            cluster = session.get(BadcaseCluster, identifiers["cluster"])
-            suggestion = session.get(RootCauseSuggestion, identifiers["suggestion"])
-            assert cluster is not None
-            assert suggestion is not None
-            assert cluster.grouping_key
-            assert suggestion.evaluation_result_id == identifiers["result"]
-            assert (suggestion.provider, suggestion.model) == ("legacy-provider", "legacy-model")
+            with Session(engine, expire_on_commit=False) as session:
+                cluster = session.get(BadcaseCluster, identifiers["cluster"])
+                suggestion = session.get(RootCauseSuggestion, identifiers["suggestion"])
+                assert cluster is not None
+                assert suggestion is not None
+                assert cluster.grouping_key
+                assert suggestion.evaluation_result_id == identifiers["result"]
+                assert (suggestion.provider, suggestion.model) == (
+                    "legacy-provider",
+                    "legacy-model",
+                )
 
-            replay = persist_clusters(
-                session,
-                [
-                    ClusterDraft(
-                        run_id=identifiers["run"],
-                        scenario="refund",
-                        weakest_dimension="correctness",
-                        normalized_reason="missing refund policy details",
-                        algorithm_version=GROUPING_ALGORITHM_VERSION,
-                        member_ids=(identifiers["result"],),
-                        representative_ids=(identifiers["result"],),
-                    )
-                ],
-            )
-            assert replay[0].id == identifiers["cluster"]
-            assert (
-                attribute_cluster(
+                replay = persist_clusters(
                     session,
-                    identifiers["cluster"],
-                    EvaluationProvider(LegacyAttributionTransport()),
-                ).id
-                == identifiers["suggestion"]
-            )
-            assert len(session.scalars(select(ClusterMember)).all()) == 1
+                    [
+                        ClusterDraft(
+                            run_id=identifiers["run"],
+                            scenario="refund",
+                            weakest_dimension="correctness",
+                            normalized_reason="missing refund policy details",
+                            algorithm_version=GROUPING_ALGORITHM_VERSION,
+                            member_ids=(identifiers["result"],),
+                            representative_ids=(identifiers["result"],),
+                        )
+                    ],
+                )
+                assert replay[0].id == identifiers["cluster"]
+                assert (
+                    attribute_cluster(
+                        session,
+                        identifiers["cluster"],
+                        EvaluationProvider(LegacyAttributionTransport()),
+                    ).id
+                    == identifiers["suggestion"]
+                )
+                assert len(session.scalars(select(ClusterMember)).all()) == 1
 
-            with pytest.raises(IntegrityError):
-                session.execute(
-                    text("UPDATE badcase_clusters SET grouping_key = NULL WHERE id = :id"),
-                    {"id": identifiers["cluster"]},
-                )
-            session.rollback()
-            with pytest.raises(IntegrityError):
-                session.execute(
-                    text("UPDATE root_cause_suggestions SET provider = NULL WHERE id = :id"),
-                    {"id": identifiers["suggestion"]},
-                )
-            session.rollback()
-    finally:
-        engine.dispose()
-        command.upgrade(config, "head")
-        engine.dispose()
-        settings.database_url = original_url
+                with pytest.raises(IntegrityError):
+                    session.execute(
+                        text("UPDATE badcase_clusters SET grouping_key = NULL WHERE id = :id"),
+                        {"id": identifiers["cluster"]},
+                    )
+                session.rollback()
+                with pytest.raises(IntegrityError):
+                    session.execute(
+                        text("UPDATE root_cause_suggestions SET provider = NULL WHERE id = :id"),
+                        {"id": identifiers["suggestion"]},
+                    )
+                session.rollback()
+
+            command.downgrade(config, "0001")
+            engine.dispose()
+            assert "grouping_key" not in {
+                column["name"] for column in inspect(engine).get_columns("badcase_clusters")
+            }
+            command.upgrade(config, "head")
+        finally:
+            engine.dispose()
+            settings.database_url = original_url
