@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import CHAR, JSON, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import CHAR, JSON, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.analysis.models import BadcaseCluster  # noqa: F401
@@ -67,7 +67,10 @@ class AlertSignalReceipt(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
-    __table_args__ = MYSQL_TABLE_ARGS
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "type", name="uq_task_cluster_type"),
+        MYSQL_TABLE_ARGS,
+    )
 
     id: Mapped[str] = uuid_primary_key()
     type: Mapped[TaskType] = mapped_column(enum_type(TaskType), nullable=False)

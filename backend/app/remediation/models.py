@@ -24,7 +24,10 @@ from app.shared.types import (
 
 class QADraft(Base):
     __tablename__ = "qa_drafts"
-    __table_args__ = MYSQL_TABLE_ARGS
+    __table_args__ = (
+        UniqueConstraint("task_id", name="uq_qa_draft_task"),
+        MYSQL_TABLE_ARGS,
+    )
 
     id: Mapped[str] = uuid_primary_key()
     cluster_id: Mapped[str] = mapped_column(
@@ -44,6 +47,15 @@ class QADraft(Base):
     )
 
     cluster: Mapped[BadcaseCluster] = relationship()
+    versions: Mapped[list[QAVersion]] = relationship(
+        back_populates="draft", order_by="QAVersion.version_number"
+    )
+
+    @property
+    def current_version(self) -> QAVersion:
+        if not self.versions:
+            raise LookupError("QA draft has no versions")
+        return self.versions[-1]
 
 
 class QAVersion(Base):
@@ -64,7 +76,8 @@ class QAVersion(Base):
     approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
 
-    draft: Mapped[QADraft] = relationship()
+    draft: Mapped[QADraft] = relationship(back_populates="versions")
+    evidence: Mapped[list[QAEvidence]] = relationship()
 
 
 class QAEvidence(Base):
@@ -91,7 +104,10 @@ class QAEvidence(Base):
 
 class ExportRecord(Base):
     __tablename__ = "export_records"
-    __table_args__ = MYSQL_TABLE_ARGS
+    __table_args__ = (
+        UniqueConstraint("format", "artifact_hash", name="uq_export_record_format_hash"),
+        MYSQL_TABLE_ARGS,
+    )
 
     id: Mapped[str] = uuid_primary_key()
     format: Mapped[str] = mapped_column(String(16), nullable=False)
