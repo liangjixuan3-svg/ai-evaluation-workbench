@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -52,6 +54,21 @@ class AlertSignal:
         scenario = self.scenario or "all-scenarios"
         root_cause = self.root_cause.value if self.root_cause else "unattributed"
         return f"{scenario}:{root_cause}"
+
+    @property
+    def fingerprint(self) -> str:
+        payload = {
+            "kind": self.kind,
+            "merge_key": self.merge_key,
+            "baseline_value": self.baseline_value,
+            "current_value": self.current_value,
+            "impact_count": self.impact_count,
+            "result_ids": sorted(self.result_ids),
+            "window_started_at": self.window_started_at.isoformat(),
+            "window_ended_at": self.window_ended_at.isoformat(),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def alert_config(**values: object) -> AlertConfig:

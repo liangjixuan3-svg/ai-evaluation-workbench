@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CHAR, JSON, ForeignKey, Integer, String, Text
+from sqlalchemy import CHAR, JSON, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -14,7 +14,10 @@ from app.shared.types import MYSQL_TABLE_ARGS, UTCDateTime, enum_type, utc_now, 
 
 class BadcaseCluster(Base):
     __tablename__ = "badcase_clusters"
-    __table_args__ = MYSQL_TABLE_ARGS
+    __table_args__ = (
+        UniqueConstraint("grouping_key", name="uq_badcase_cluster_grouping"),
+        MYSQL_TABLE_ARGS,
+    )
 
     id: Mapped[str] = uuid_primary_key()
     run_id: Mapped[str] = mapped_column(
@@ -24,6 +27,7 @@ class BadcaseCluster(Base):
     weakest_dimension: Mapped[str] = mapped_column(String(64), nullable=False)
     normalized_reason: Mapped[str] = mapped_column(Text, nullable=False)
     algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    grouping_key: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
 
 
@@ -51,7 +55,16 @@ class ClusterMember(Base):
 
 class RootCauseSuggestion(Base):
     __tablename__ = "root_cause_suggestions"
-    __table_args__ = MYSQL_TABLE_ARGS
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id",
+            "provider",
+            "model",
+            "evaluation_result_id",
+            name="uq_root_suggestion_replay",
+        ),
+        MYSQL_TABLE_ARGS,
+    )
 
     id: Mapped[str] = uuid_primary_key()
     cluster_id: Mapped[str] = mapped_column(
@@ -59,6 +72,13 @@ class RootCauseSuggestion(Base):
         ForeignKey("badcase_clusters.id", name="fk_root_suggestion_cluster"),
         nullable=False,
     )
+    evaluation_result_id: Mapped[str] = mapped_column(
+        CHAR(36),
+        ForeignKey("evaluation_results.id", name="fk_root_suggestion_result"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
     root_cause: Mapped[RootCause] = mapped_column(enum_type(RootCause), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)

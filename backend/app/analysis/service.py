@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
+from hashlib import sha256
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analysis.models import BadcaseCluster, ClusterMember, RootCauseSuggestion
@@ -74,18 +77,44 @@ def persist_clusters(session: Session, drafts: Iterable[ClusterDraft]) -> list[B
     """Persist every member link while marking only selected samples as representatives."""
     clusters: list[BadcaseCluster] = []
     for draft in drafts:
-        cluster = BadcaseCluster(
-            run_id=draft.run_id,
-            scenario=draft.scenario,
-            weakest_dimension=draft.weakest_dimension,
-            normalized_reason=draft.normalized_reason,
-            algorithm_version=draft.algorithm_version,
+        grouping_key = _cluster_grouping_key(draft)
+        cluster = session.scalar(
+            select(BadcaseCluster)
+            .where(BadcaseCluster.grouping_key == grouping_key)
+            .with_for_update()
         )
-        session.add(cluster)
-        session.flush()
+        if cluster is None:
+            candidate = BadcaseCluster(
+                run_id=draft.run_id,
+                scenario=draft.scenario,
+                weakest_dimension=draft.weakest_dimension,
+                normalized_reason=draft.normalized_reason,
+                algorithm_version=draft.algorithm_version,
+                grouping_key=grouping_key,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(candidate)
+                    session.flush()
+                cluster = candidate
+            except IntegrityError:
+                cluster = session.scalar(
+                    select(BadcaseCluster)
+                    .where(BadcaseCluster.grouping_key == grouping_key)
+                    .with_for_update()
+                )
+                if cluster is None:
+                    raise
         representative_rank = {
             result_id: rank for rank, result_id in enumerate(draft.representative_ids, start=1)
         }
+        existing_member_ids = set(
+            session.scalars(
+                select(ClusterMember.evaluation_result_id).where(
+                    ClusterMember.cluster_id == cluster.id
+                )
+            )
+        )
         session.add_all(
             ClusterMember(
                 cluster_id=cluster.id,
@@ -93,6 +122,7 @@ def persist_clusters(session: Session, drafts: Iterable[ClusterDraft]) -> list[B
                 representative_rank=representative_rank.get(result_id),
             )
             for result_id in draft.member_ids
+            if result_id not in existing_member_ids
         )
         clusters.append(cluster)
     session.commit()
@@ -117,6 +147,20 @@ def attribute_cluster(
     if result is None:
         raise ValueError("badcase cluster has no evaluation results")
 
+    identity = provider.identity
+    existing_suggestion = session.scalar(
+        select(RootCauseSuggestion)
+        .where(
+            RootCauseSuggestion.cluster_id == cluster.id,
+            RootCauseSuggestion.evaluation_result_id == result.id,
+            RootCauseSuggestion.provider == identity.provider,
+            RootCauseSuggestion.model == identity.model,
+        )
+        .with_for_update()
+    )
+    if existing_suggestion is not None:
+        return existing_suggestion
+
     evaluation = ProviderEvaluation(
         dimensions=result.dimension_scores,
         reason=result.reason,
@@ -133,12 +177,31 @@ def attribute_cluster(
     )
     suggestion = RootCauseSuggestion(
         cluster_id=cluster.id,
+        evaluation_result_id=result.id,
+        provider=identity.provider,
+        model=identity.model,
         root_cause=response.root_cause,
         reason=response.reason,
         evidence=response.evidence,
         confidence=_stored_confidence(response.confidence),
     )
-    session.add(suggestion)
+    try:
+        with session.begin_nested():
+            session.add(suggestion)
+            session.flush()
+    except IntegrityError:
+        suggestion = session.scalar(
+            select(RootCauseSuggestion)
+            .where(
+                RootCauseSuggestion.cluster_id == cluster.id,
+                RootCauseSuggestion.evaluation_result_id == result.id,
+                RootCauseSuggestion.provider == identity.provider,
+                RootCauseSuggestion.model == identity.model,
+            )
+            .with_for_update()
+        )
+        if suggestion is None:
+            raise
     session.commit()
     return suggestion
 
@@ -172,3 +235,13 @@ def _stored_confidence(confidence: float) -> Confidence:
     if confidence >= 0.5:
         return Confidence.MEDIUM
     return Confidence.LOW
+
+
+def _cluster_grouping_key(draft: ClusterDraft) -> str:
+    payload = [
+        draft.scenario,
+        draft.weakest_dimension,
+        draft.normalized_reason,
+    ]
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()

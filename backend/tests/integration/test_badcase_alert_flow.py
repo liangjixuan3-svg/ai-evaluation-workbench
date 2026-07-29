@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -11,10 +12,10 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.alerts.models import Alert, AlertResult
-from app.alerts.rules import AlertConfig, AlertMetrics, evaluate_alert_rules
+from app.alerts.models import Alert, AlertResult, AlertSignalReceipt
+from app.alerts.rules import AlertConfig, AlertMetrics, AlertSignal, evaluate_alert_rules
 from app.alerts.service import merge_alert
-from app.analysis.models import ClusterMember, RootCauseSuggestion
+from app.analysis.models import BadcaseCluster, ClusterMember, RootCauseSuggestion
 from app.analysis.service import attribute_cluster, cluster_badcases, persist_clusters
 from app.db import get_session
 from app.evaluation.contracts import AttributionRequest, ProviderAttribution
@@ -58,10 +59,14 @@ def session(engine) -> Iterator[Session]:
 class AttributionTransport:
     identity = ProviderIdentity(provider="test", model="attribution-v1")
 
+    def __init__(self) -> None:
+        self.attribute_calls = 0
+
     def evaluate(self, request: object) -> object:
         raise AssertionError("evaluation is not expected during attribution")
 
     def attribute(self, request: AttributionRequest) -> ProviderAttribution:
+        self.attribute_calls += 1
         return ProviderAttribution(
             root_cause=RootCause.MISSING_KNOWLEDGE,
             reason="The agent did not know the refund policy.",
@@ -74,6 +79,8 @@ class AttributionTransport:
 
 
 class InvalidAttributionTransport(AttributionTransport):
+    identity = ProviderIdentity(provider="invalid-test", model="attribution-v1")
+
     def attribute(self, request: AttributionRequest) -> ProviderAttribution:
         return ProviderAttribution(
             root_cause=RootCause.MISSING_KNOWLEDGE,
@@ -160,6 +167,22 @@ def _config() -> AlertConfig:
     )
 
 
+def _metric_only_signal(start: datetime) -> AlertSignal:
+    return AlertSignal(
+        kind="overall_drop",
+        priority="P3",
+        scenario="refund",
+        root_cause=RootCause.MISSING_KNOWLEDGE,
+        baseline_value=0.1,
+        current_value=0.2,
+        impact_count=4,
+        result_ids=(),
+        window_started_at=start,
+        window_ended_at=start + timedelta(hours=1),
+        merge_window=timedelta(hours=6),
+    )
+
+
 def test_clusters_persist_normalized_reason_and_rank_representatives(session: Session) -> None:
     results = _failed_results(session)
 
@@ -184,6 +207,17 @@ def test_clusters_persist_normalized_reason_and_rank_representatives(session: Se
     ]
 
 
+def test_persist_clusters_is_idempotent_for_an_exact_replay(session: Session) -> None:
+    drafts = cluster_badcases(_failed_results(session))
+
+    original = persist_clusters(session, drafts)
+    replay = persist_clusters(session, drafts)
+
+    assert [cluster.id for cluster in replay] == [cluster.id for cluster in original]
+    assert len(session.scalars(select(BadcaseCluster)).all()) == 1
+    assert len(session.scalars(select(ClusterMember)).all()) == 4
+
+
 def test_attribution_is_validated_and_human_confirmable_later(session: Session) -> None:
     cluster = persist_clusters(session, cluster_badcases(_failed_results(session)))[0]
     provider = EvaluationProvider(AttributionTransport())
@@ -204,6 +238,21 @@ def test_attribution_is_validated_and_human_confirmable_later(session: Session) 
         )
         == suggestion
     )
+
+
+def test_attribution_is_idempotent_for_the_same_cluster_provider_and_result(
+    session: Session,
+) -> None:
+    cluster = persist_clusters(session, cluster_badcases(_failed_results(session)))[0]
+    transport = AttributionTransport()
+    provider = EvaluationProvider(transport)
+
+    original = attribute_cluster(session, cluster.id, provider)
+    replay = attribute_cluster(session, cluster.id, provider)
+
+    assert replay.id == original.id
+    assert transport.attribute_calls == 1
+    assert len(session.scalars(select(RootCauseSuggestion)).all()) == 1
 
 
 def test_merge_window_keeps_one_open_alert_and_all_result_links(session: Session) -> None:
@@ -260,6 +309,57 @@ def test_merge_window_keeps_one_open_alert_and_all_result_links(session: Session
     assert merged.impact_count == 4
     assert session.scalars(select(Alert)).all() == [alert]
     assert len(session.scalars(select(AlertResult)).all()) == 4
+
+
+def test_merge_keeps_the_highest_precedence_kind_and_priority(session: Session) -> None:
+    results = _failed_results(session)
+    start = datetime(2026, 7, 30, tzinfo=UTC)
+    issue_spike = AlertSignal(
+        kind="issue_spike",
+        priority="P1",
+        scenario="refund",
+        root_cause=RootCause.MISSING_KNOWLEDGE,
+        baseline_value=0.1,
+        current_value=0.4,
+        impact_count=2,
+        result_ids=tuple(result.id for result in results[:2]),
+        window_started_at=start,
+        window_ended_at=start + timedelta(hours=1),
+        merge_window=timedelta(hours=6),
+    )
+    overall_drop = replace(
+        issue_spike,
+        kind="overall_drop",
+        priority="P3",
+        result_ids=tuple(result.id for result in results[2:]),
+        window_started_at=start + timedelta(hours=2),
+        window_ended_at=start + timedelta(hours=3),
+    )
+
+    merge_alert(session, issue_spike)
+    alert = merge_alert(session, overall_drop)
+
+    assert (alert.kind, alert.priority) == ("issue_spike", "P1")
+
+
+def test_metric_only_alert_replay_does_not_increase_impact(session: Session) -> None:
+    signal = _metric_only_signal(datetime(2026, 7, 30, tzinfo=UTC))
+
+    original = merge_alert(session, signal)
+    replay = merge_alert(session, signal)
+
+    assert replay.id == original.id
+    assert replay.impact_count == 4
+    assert len(session.scalars(select(AlertSignalReceipt)).all()) == 1
+
+
+def test_new_metric_only_window_inside_merge_period_increases_impact(session: Session) -> None:
+    original = merge_alert(session, _metric_only_signal(datetime(2026, 7, 30, tzinfo=UTC)))
+    newer = merge_alert(session, _metric_only_signal(datetime(2026, 7, 30, 2, tzinfo=UTC)))
+
+    assert newer.id == original.id
+    assert newer.impact_count == 8
+    assert len(session.scalars(select(AlertSignalReceipt)).all()) == 2
 
 
 def test_alert_api_uses_session_override_and_returns_evidence(session: Session) -> None:

@@ -37,6 +37,7 @@ from app.shared.enums import (
 from app.shared.types import ImmutableRecordError
 
 EXPECTED_TABLES = {
+    "alert_signal_receipts",
     "alembic_version",
     "alert_results",
     "alerts",
@@ -276,6 +277,7 @@ def test_qa_versions_are_append_only(session: Session) -> None:
         weakest_dimension="correctness",
         normalized_reason="missing policy",
         algorithm_version="v1",
+        grouping_key="test-cluster-grouping-key",
     )
     draft = QADraft(cluster=cluster, confidence=Confidence.HIGH)
     first = QAVersion(

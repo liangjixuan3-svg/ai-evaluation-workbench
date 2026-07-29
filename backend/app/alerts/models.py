@@ -54,6 +54,17 @@ class AlertResult(Base):
     )
 
 
+class AlertSignalReceipt(Base):
+    __tablename__ = "alert_signal_receipts"
+    __table_args__ = MYSQL_TABLE_ARGS
+
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    alert_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("alerts.id", name="fk_alert_signal_receipt_alert"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = MYSQL_TABLE_ARGS
