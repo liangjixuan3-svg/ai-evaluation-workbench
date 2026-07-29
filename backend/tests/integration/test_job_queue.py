@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.jobs.models import Job
 from app.jobs.repository import claim_jobs, enqueue_job
 from app.jobs.worker import run_worker_once
+from app.shared.audit import AuditEvent
 from app.shared.enums import JobStatus
 from app.shared.types import utc_now
 
@@ -74,6 +75,50 @@ def test_concurrent_claimers_never_return_the_same_job(engine) -> None:
     finally:
         with Session(engine) as cleanup_session:
             cleanup_session.execute(delete(Job).where(Job.idempotency_key.like(f"{key_prefix}%")))
+            cleanup_session.commit()
+
+
+def test_concurrent_enqueue_returns_one_job_without_losing_caller_work(engine) -> None:
+    key = f"enqueue-race-{uuid4().hex}"
+    select_barrier = Barrier(2)
+
+    class RacingSession(Session):
+        def scalar(self, statement, *args, **kwargs):
+            value = super().scalar(statement, *args, **kwargs)
+            if value is None:
+                select_barrier.wait(timeout=5)
+            return value
+
+    def enqueue(index: int) -> str:
+        with RacingSession(engine, expire_on_commit=False) as session:
+            session.add(
+                AuditEvent(
+                    actor=f"enqueue-worker-{index}",
+                    action="enqueue_started",
+                    entity_type="job",
+                    entity_id=key,
+                    payload={},
+                )
+            )
+            return enqueue_job(session, "evaluation_item", {"index": index}, key).id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_id, second_id = list(executor.map(enqueue, range(2)))
+
+        with Session(engine) as verification_session:
+            jobs = list(verification_session.scalars(select(Job).where(Job.idempotency_key == key)))
+            audits = list(
+                verification_session.scalars(select(AuditEvent).where(AuditEvent.entity_id == key))
+            )
+
+        assert first_id == second_id
+        assert len(jobs) == 1
+        assert len(audits) == 2
+    finally:
+        with Session(engine) as cleanup_session:
+            cleanup_session.execute(delete(AuditEvent).where(AuditEvent.entity_id == key))
+            cleanup_session.execute(delete(Job).where(Job.idempotency_key == key))
             cleanup_session.commit()
 
 

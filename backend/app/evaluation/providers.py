@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.evaluation.contracts import (
@@ -28,6 +29,18 @@ class _EvaluationTransport(Protocol):
 
 class ProviderResponseFormatError(ValueError):
     """Raised when a provider response cannot be parsed as one JSON object."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderIdentity:
+    provider: str
+    model: str
+
+    def __post_init__(self) -> None:
+        if not self.provider.strip() or self.provider != self.provider.strip():
+            raise ValueError("provider identity must be non-empty and trimmed")
+        if not self.model.strip() or self.model != self.model.strip():
+            raise ValueError("model identity must be non-empty and trimmed")
 
 
 def _parse_response_object(response: str | bytes | Mapping[str, Any]) -> dict[str, Any]:
@@ -71,8 +84,13 @@ def parse_qa_draft_response(
 class EvaluationProvider:
     """Public provider boundary that validates every delegated result against its request."""
 
-    def __init__(self, transport: _EvaluationTransport) -> None:
+    def __init__(self, transport: _EvaluationTransport, *, provider: str, model: str) -> None:
         self._transport = transport
+        self._identity = ProviderIdentity(provider=provider, model=model)
+
+    @property
+    def identity(self) -> ProviderIdentity:
+        return self._identity
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
         result = self._transport.evaluate(request)
@@ -157,4 +175,4 @@ class FakeEvaluationProvider(EvaluationProvider):
     """Deterministic development provider with the same validation boundary as real adapters."""
 
     def __init__(self) -> None:
-        super().__init__(_FakeEvaluationTransport())
+        super().__init__(_FakeEvaluationTransport(), provider="fake", model="deterministic-v1")

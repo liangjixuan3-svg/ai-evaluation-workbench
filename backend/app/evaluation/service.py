@@ -6,17 +6,16 @@ from decimal import Decimal
 from time import perf_counter
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.evaluation.contracts import EvaluationRequest, ProviderEvaluation
 from app.evaluation.models import EvaluationResult, EvaluationRun, ModelCallRecord
-from app.evaluation.providers import EvaluationProvider
+from app.evaluation.providers import EvaluationProvider, ProviderIdentity
 from app.evaluation.scoring import calculate_outcome
 from app.ingestion.models import Conversation, SamplingBatchConversation
 from app.ingestion.redaction import redact_conversation
 from app.jobs.models import Job
-from app.jobs.repository import enqueue_job
+from app.jobs.repository import claim_job, enqueue_job
 from app.shared.audit import record_audit
 from app.shared.enums import Confidence, JobStatus, RunStatus
 from app.shared.types import utc_now
@@ -45,6 +44,10 @@ def run_evaluation_batch(
     run = session.get(EvaluationRun, run_id)
     if run is None:
         raise LookupError(f"evaluation run {run_id} does not exist")
+    identity = provider.identity
+    if run.provider != identity.provider or run.model != identity.model:
+        session.rollback()
+        raise ValueError("provider identity does not match evaluation run provider/model")
     if run.sampling_batch_id is None:
         raise ValueError("evaluation run requires a sampling batch")
 
@@ -77,21 +80,11 @@ def run_evaluation_batch(
             continue
         session.commit()
 
-        item_job = session.get(Job, item_job.id)
-        if (
-            item_job is None
-            or item_job.status != JobStatus.QUEUED
-            or item_job.run_after > utc_now()
-        ):
-            session.commit()
+        item_job = claim_job(session, item_job.id, f"evaluation-run:{run_id}")
+        if item_job is None:
             continue
 
-        item_job.status = JobStatus.CLAIMED
-        item_job.claimed_by = f"evaluation-run:{run_id}"
-        item_job.claimed_at = utc_now()
-        session.commit()
-
-        _evaluate_item(session, run_id, conversation_id, item_job.id, provider)
+        _evaluate_item(session, run_id, conversation_id, item_job.id, provider, identity)
 
     return _finish_run(session, run_id, conversation_ids, item_jobs)
 
@@ -102,31 +95,24 @@ def _evaluate_item(
     conversation_id: str,
     job_id: str,
     provider: EvaluationProvider,
+    identity: ProviderIdentity,
 ) -> None:
-    run = session.get(EvaluationRun, run_id)
-    conversation = session.get(Conversation, conversation_id)
-    if run is None or conversation is None:
-        session.rollback()
-        raise LookupError("evaluation run or conversation no longer exists")
-
-    request = EvaluationRequest(conversation=redact_conversation(conversation))
-    template = _TemplateSnapshot(
-        weights=dict(run.template.weights), threshold=run.template.threshold
-    )
-    session.commit()
-
     started = perf_counter()
     try:
+        run = session.get(EvaluationRun, run_id)
+        conversation = session.get(Conversation, conversation_id)
+        if run is None or conversation is None:
+            raise LookupError("evaluation run or conversation no longer exists")
+
+        request = EvaluationRequest(conversation=redact_conversation(conversation))
+        template = _TemplateSnapshot(
+            weights=dict(run.template.weights), threshold=run.template.threshold
+        )
+        session.commit()
+
         provider_result = provider.evaluate(request)
         duration_ms = round((perf_counter() - started) * 1000)
         outcome = calculate_outcome(provider_result, template)
-    except Exception as error:  # noqa: BLE001 - provider failures are isolated per item.
-        duration_ms = round((perf_counter() - started) * 1000)
-        session.rollback()
-        _checkpoint_failure(session, run_id, job_id, error, duration_ms)
-        return
-
-    try:
         _checkpoint_success(
             session,
             run_id,
@@ -136,12 +122,12 @@ def _evaluate_item(
             outcome.score,
             outcome.passed,
             duration_ms,
+            identity,
         )
-    except IntegrityError:
+    except Exception as error:  # noqa: BLE001 - provider failures are isolated per item.
+        duration_ms = round((perf_counter() - started) * 1000)
         session.rollback()
-        if not _result_exists(session, run_id, conversation_id):
-            raise
-        _mark_job_succeeded(session, job_id)
+        _checkpoint_failure(session, run_id, job_id, error, duration_ms, identity)
 
 
 def _checkpoint_success(
@@ -153,6 +139,7 @@ def _checkpoint_success(
     score: float,
     passed: bool,
     duration_ms: int,
+    identity: ProviderIdentity,
 ) -> None:
     run = session.get(EvaluationRun, run_id)
     job = session.get(Job, job_id)
@@ -173,7 +160,7 @@ def _checkpoint_success(
             severe_compliance_error=provider_result.severe_compliance_error,
         )
     )
-    session.add(_call_record(run, "succeeded", duration_ms))
+    session.add(_call_record(run, identity, "succeeded", duration_ms))
     job.status = JobStatus.SUCCEEDED
     job.claimed_by = None
     job.claimed_at = None
@@ -184,7 +171,7 @@ def _checkpoint_success(
         action="evaluation_item_succeeded",
         entity_type="conversation",
         entity_id=conversation_id,
-        payload=_lineage_payload(run),
+        payload=_lineage_payload(run, identity),
     )
     session.commit()
 
@@ -195,12 +182,49 @@ def _checkpoint_failure(
     job_id: str,
     error: Exception,
     duration_ms: int,
+    identity: ProviderIdentity,
 ) -> None:
     run = session.get(EvaluationRun, run_id)
     job = session.get(Job, job_id)
     if run is None or job is None:
         raise LookupError("evaluation failure checkpoint parent no longer exists")
 
+    _stage_failure(session, run, job, error, duration_ms, identity)
+    try:
+        record_audit(
+            session,
+            actor="evaluation-worker",
+            action=(
+                "evaluation_item_manual_review"
+                if job.status == JobStatus.MANUAL_REVIEW
+                else "evaluation_item_retry_scheduled"
+            ),
+            entity_type="job",
+            entity_id=job.id,
+            payload={
+                **_lineage_payload(run, identity),
+                "attempts": job.attempts,
+                "error": str(error),
+            },
+        )
+    except Exception:  # noqa: BLE001 - retry state must survive an audit outage.
+        session.rollback()
+        run = session.get(EvaluationRun, run_id)
+        job = session.get(Job, job_id)
+        if run is None or job is None:
+            raise LookupError("evaluation failure checkpoint parent no longer exists")
+        _stage_failure(session, run, job, error, duration_ms, identity)
+    session.commit()
+
+
+def _stage_failure(
+    session: Session,
+    run: EvaluationRun,
+    job: Job,
+    error: Exception,
+    duration_ms: int,
+    identity: ProviderIdentity,
+) -> None:
     job.attempts += 1
     job.last_error = str(error)
     job.claimed_by = None
@@ -210,28 +234,15 @@ def _checkpoint_failure(
     else:
         job.status = JobStatus.QUEUED
         job.run_after = utc_now() + timedelta(seconds=2**job.attempts)
-
     session.add(
         _call_record(
             run,
+            identity,
             "failed",
             duration_ms,
             error_code=type(error).__name__[:64],
         )
     )
-    record_audit(
-        session,
-        actor="evaluation-worker",
-        action=(
-            "evaluation_item_manual_review"
-            if job.status == JobStatus.MANUAL_REVIEW
-            else "evaluation_item_retry_scheduled"
-        ),
-        entity_type="job",
-        entity_id=job.id,
-        payload={**_lineage_payload(run), "attempts": job.attempts, "error": str(error)},
-    )
-    session.commit()
 
 
 def _finish_run(
@@ -296,14 +307,15 @@ def _mark_job_succeeded(session: Session, job_id: str) -> None:
 
 def _call_record(
     run: EvaluationRun,
+    identity: ProviderIdentity,
     status: str,
     duration_ms: int,
     error_code: str | None = None,
 ) -> ModelCallRecord:
     return ModelCallRecord(
         evaluation_run_id=run.id,
-        provider=run.provider,
-        model=run.model,
+        provider=identity.provider,
+        model=identity.model,
         operation="evaluation",
         input_tokens=0,
         output_tokens=0,
@@ -314,10 +326,10 @@ def _call_record(
     )
 
 
-def _lineage_payload(run: EvaluationRun) -> dict[str, str]:
+def _lineage_payload(run: EvaluationRun, identity: ProviderIdentity) -> dict[str, str]:
     return {
-        "provider": run.provider,
-        "model": run.model,
+        "provider": identity.provider,
+        "model": identity.model,
         "template_version": run.template.version,
         "prompt_version": run.prompt_version.version,
         "rule_version": run.rule_version.version,

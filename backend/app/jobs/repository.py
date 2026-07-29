@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,17 +34,21 @@ def enqueue_job(
         idempotency_key=idempotency_key,
         max_attempts=max_attempts,
     )
-    session.add(job)
     try:
-        session.commit()
+        with session.begin_nested():
+            session.add(job)
+            session.flush()
     except IntegrityError:
         # A concurrent enqueuer may have won the unique-key race.
-        session.rollback()
-        existing = session.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+        existing = session.scalar(
+            select(Job).where(Job.idempotency_key == idempotency_key).with_for_update()
+        )
         if existing is None:
+            session.rollback()
             raise
         session.commit()
         return existing
+    session.commit()
     return job
 
 
@@ -68,3 +72,25 @@ def claim_jobs(session: Session, worker_id: str, limit: int) -> list[Job]:
         job.claimed_at = claimed_at
     session.commit()
     return jobs
+
+
+def claim_job(session: Session, job_id: str, worker_id: str) -> Job | None:
+    claimed_at = utc_now()
+    result = session.execute(
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == JobStatus.QUEUED,
+            Job.run_after <= claimed_at,
+        )
+        .values(
+            status=JobStatus.CLAIMED,
+            claimed_by=worker_id,
+            claimed_at=claimed_at,
+        )
+    )
+    claimed = result.rowcount == 1
+    session.commit()
+    if not claimed:
+        return None
+    return session.get(Job, job_id)

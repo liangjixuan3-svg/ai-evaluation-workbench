@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -246,7 +247,9 @@ def test_public_provider_boundary_rejects_fabricated_evidence_for_all_operations
                 confidence=1.0,
             )
 
-    provider = EvaluationProvider(FabricatedEvidenceProvider())
+    provider = EvaluationProvider(
+        FabricatedEvidenceProvider(), provider="fabricated-test", model="fabricated-v1"
+    )
     valid_evaluation = ProviderEvaluation(
         dimensions={
             "correctness": 100,
@@ -315,3 +318,12 @@ def test_fake_provider_is_deterministic_for_the_same_redacted_conversation(
     )
     assert attribution.evidence[0] == first.evidence[0]
     assert draft.evidence[0] == first.evidence[0]
+
+
+def test_fake_provider_exposes_immutable_identity() -> None:
+    provider = FakeEvaluationProvider()
+
+    assert provider.identity.provider == "fake"
+    assert provider.identity.model == "deterministic-v1"
+    with pytest.raises(FrozenInstanceError):
+        provider.identity.provider = "caller-overwrite"

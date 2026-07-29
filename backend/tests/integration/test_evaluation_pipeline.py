@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Barrier, Lock
 from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
+import app.evaluation.service as evaluation_service
 from app.db import get_session
 from app.evaluation.contracts import EvaluationRequest, ProviderEvaluation
 from app.evaluation.models import (
@@ -30,9 +33,11 @@ from app.ingestion.models import (
     SamplingBatch,
     SamplingBatchConversation,
 )
+from app.ingestion.redaction import redact_conversation
 from app.jobs.models import Job
 from app.jobs.repository import enqueue_job
 from app.main import create_app
+from app.shared.audit import AuditEvent
 from app.shared.enums import JobStatus, RunStatus
 from app.shared.types import utc_now
 
@@ -83,6 +88,15 @@ class FlakyTransport:
             evidence=[evidence],
             confidence=0.9,
         )
+
+
+def _provider(
+    transport: FlakyTransport,
+    *,
+    provider: str = "public-test-provider",
+    model: str = "model-v9",
+) -> EvaluationProvider:
+    return EvaluationProvider(transport, provider=provider, model=model)
 
 
 def _run_with_sample(session: Session, count: int = 3) -> tuple[EvaluationRun, list[Conversation]]:
@@ -149,12 +163,118 @@ def _run_with_sample(session: Session, count: int = 3) -> tuple[EvaluationRun, l
     return run, conversations
 
 
+def _delete_run_fixture(engine, run_id: str) -> None:
+    with Session(engine) as session:
+        run = session.get(EvaluationRun, run_id)
+        assert run is not None
+        conversation_ids = list(
+            session.scalars(
+                select(SamplingBatchConversation.conversation_id).where(
+                    SamplingBatchConversation.batch_id == run.sampling_batch_id
+                )
+            )
+        )
+        source_ids = list(
+            session.scalars(
+                select(Conversation.data_source_id).where(Conversation.id.in_(conversation_ids))
+            )
+        )
+        job_ids = list(
+            session.scalars(
+                select(Job.id).where(Job.idempotency_key.like(f"evaluation-%:{run_id}:%"))
+            )
+        )
+        session.execute(
+            delete(AuditEvent).where(
+                AuditEvent.entity_id.in_([run_id, *conversation_ids, *job_ids])
+            )
+        )
+        session.execute(delete(ModelCallRecord).where(ModelCallRecord.evaluation_run_id == run_id))
+        session.execute(delete(EvaluationResult).where(EvaluationResult.run_id == run_id))
+        session.execute(delete(Job).where(Job.id.in_(job_ids)))
+        session.execute(
+            delete(SamplingBatchConversation).where(
+                SamplingBatchConversation.batch_id == run.sampling_batch_id
+            )
+        )
+        session.execute(delete(EvaluationRun).where(EvaluationRun.id == run_id))
+        session.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
+        session.execute(delete(SamplingBatch).where(SamplingBatch.id == run.sampling_batch_id))
+        session.execute(delete(EvaluationTemplate).where(EvaluationTemplate.id == run.template_id))
+        session.execute(delete(PromptVersion).where(PromptVersion.id == run.prompt_version_id))
+        session.execute(delete(RuleVersion).where(RuleVersion.id == run.rule_version_id))
+        session.execute(delete(DataSource).where(DataSource.id.in_(source_ids)))
+        session.commit()
+
+
+def test_concurrent_batch_runners_invoke_provider_once_per_item(engine) -> None:
+    with Session(engine, expire_on_commit=False) as setup_session:
+        run, conversations = _run_with_sample(setup_session, count=1)
+        run_id = run.id
+        conversation_id = conversations[0].id
+        item_job = enqueue_job(
+            setup_session,
+            "evaluation_item",
+            {"run_id": run_id, "conversation_id": conversation_id},
+            f"evaluation-item:{run_id}:{conversation_id}",
+        )
+        item_job_id = item_job.id
+
+    read_barrier = Barrier(2)
+    calls_lock = Lock()
+    call_count = 0
+    transport = FlakyTransport()
+    original_evaluate = transport.evaluate
+
+    def counted_evaluate(request: EvaluationRequest) -> ProviderEvaluation:
+        nonlocal call_count
+        with calls_lock:
+            call_count += 1
+        return original_evaluate(request)
+
+    transport.evaluate = counted_evaluate  # type: ignore[method-assign]
+
+    class RacingSession(Session):
+        def get(self, entity, ident, **kwargs):
+            value = super().get(entity, ident, **kwargs)
+            if (
+                entity is Job
+                and ident == item_job_id
+                and value is not None
+                and value.status == JobStatus.QUEUED
+            ):
+                read_barrier.wait(timeout=5)
+            return value
+
+    def run_batch(_: int) -> None:
+        with RacingSession(engine, expire_on_commit=False) as worker_session:
+            run_evaluation_batch(worker_session, run_id, _provider(transport))
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(run_batch, range(2)))
+
+        with Session(engine) as verification_session:
+            result_count = len(
+                list(
+                    verification_session.scalars(
+                        select(EvaluationResult.id).where(EvaluationResult.run_id == run_id)
+                    )
+                )
+            )
+
+        assert call_count == 1
+        assert result_count == 1
+    finally:
+        _delete_run_fixture(engine, run_id)
+
+
 def test_batch_keeps_success_when_one_item_fails(session: Session) -> None:
     run, conversations = _run_with_sample(session)
     failed = conversations[-1]
     transport = FlakyTransport({failed.external_id})
 
-    summary = run_evaluation_batch(session, run.id, EvaluationProvider(transport))
+    summary = run_evaluation_batch(session, run.id, _provider(transport))
     stored_run = session.get(EvaluationRun, run.id)
 
     assert summary.succeeded == 2
@@ -176,11 +296,109 @@ def test_batch_keeps_success_when_one_item_fails(session: Session) -> None:
     )
 
 
+def test_pre_provider_failure_retries_item_and_continues_siblings(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, conversations = _run_with_sample(session)
+    failed = conversations[1]
+    transport = FlakyTransport()
+
+    def fail_one_redaction(conversation: Conversation):
+        if conversation.id == failed.id:
+            raise ValueError("invalid conversation body")
+        return redact_conversation(conversation)
+
+    monkeypatch.setattr(evaluation_service, "redact_conversation", fail_one_redaction)
+
+    summary = run_evaluation_batch(session, run.id, _provider(transport))
+    retry = session.scalar(
+        select(Job).where(Job.idempotency_key == f"evaluation-item:{run.id}:{failed.id}")
+    )
+
+    assert summary.succeeded == 2
+    assert summary.failed == 1
+    assert len(transport.requests) == 2
+    assert retry is not None
+    assert retry.status == JobStatus.QUEUED
+    assert retry.attempts == 1
+
+
+def test_checkpoint_audit_failure_retries_item_and_continues_siblings(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, conversations = _run_with_sample(session)
+    failed = conversations[1]
+    transport = FlakyTransport()
+    original_record_audit = evaluation_service.record_audit
+
+    def fail_one_success_audit(*args, **kwargs):
+        if (
+            kwargs.get("action") == "evaluation_item_succeeded"
+            and kwargs.get("entity_id") == failed.id
+        ):
+            raise RuntimeError("audit persistence unavailable")
+        return original_record_audit(*args, **kwargs)
+
+    monkeypatch.setattr(evaluation_service, "record_audit", fail_one_success_audit)
+
+    summary = run_evaluation_batch(session, run.id, _provider(transport))
+    retry = session.scalar(
+        select(Job).where(Job.idempotency_key == f"evaluation-item:{run.id}:{failed.id}")
+    )
+    failed_result = session.scalar(
+        select(EvaluationResult).where(
+            EvaluationResult.run_id == run.id,
+            EvaluationResult.conversation_id == failed.id,
+        )
+    )
+
+    assert summary.succeeded == 2
+    assert summary.failed == 1
+    assert len(transport.requests) == 3
+    assert failed_result is None
+    assert retry is not None
+    assert retry.status == JobStatus.QUEUED
+    assert retry.attempts == 1
+
+
+def test_retry_audit_failure_still_persists_retry_and_continues_siblings(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, conversations = _run_with_sample(session)
+    failed = conversations[1]
+    transport = FlakyTransport()
+    original_record_audit = evaluation_service.record_audit
+
+    def fail_retry_audit(*args, **kwargs):
+        if kwargs.get("action") == "evaluation_item_retry_scheduled":
+            raise RuntimeError("audit persistence unavailable")
+        return original_record_audit(*args, **kwargs)
+
+    def fail_one_redaction(conversation: Conversation):
+        if conversation.id == failed.id:
+            raise ValueError("invalid conversation body")
+        return redact_conversation(conversation)
+
+    monkeypatch.setattr(evaluation_service, "record_audit", fail_retry_audit)
+    monkeypatch.setattr(evaluation_service, "redact_conversation", fail_one_redaction)
+
+    summary = run_evaluation_batch(session, run.id, _provider(transport))
+    retry = session.scalar(
+        select(Job).where(Job.idempotency_key == f"evaluation-item:{run.id}:{failed.id}")
+    )
+
+    assert summary.succeeded == 2
+    assert summary.failed == 1
+    assert retry is not None
+    assert retry.status == JobStatus.QUEUED
+    assert retry.attempts == 1
+
+
 def test_rerun_resumes_only_the_failed_item_without_duplicate_results(session: Session) -> None:
     run, conversations = _run_with_sample(session)
     failed = conversations[-1]
     transport = FlakyTransport({failed.external_id})
-    provider = EvaluationProvider(transport)
+    provider = _provider(transport)
 
     first = run_evaluation_batch(session, run.id, provider)
     retry = session.scalar(
@@ -227,7 +445,7 @@ def test_exhausted_item_enters_manual_review_without_losing_successes(session: S
         f"evaluation-item:{run.id}:{failed.id}",
     )
     transport = FlakyTransport({failed.external_id})
-    provider = EvaluationProvider(transport)
+    provider = _provider(transport)
 
     first = run_evaluation_batch(session, run.id, provider)
     retry.run_after = utc_now()
@@ -251,7 +469,7 @@ def test_result_lineage_is_persisted_on_its_versioned_run(session: Session) -> N
     run, conversations = _run_with_sample(session, count=1)
     transport = FlakyTransport()
 
-    summary = run_evaluation_batch(session, run.id, EvaluationProvider(transport))
+    summary = run_evaluation_batch(session, run.id, _provider(transport))
     result = session.scalar(select(EvaluationResult).where(EvaluationResult.run_id == run.id))
     call = session.scalar(
         select(ModelCallRecord).where(ModelCallRecord.evaluation_run_id == run.id)
@@ -271,6 +489,26 @@ def test_result_lineage_is_persisted_on_its_versioned_run(session: Session) -> N
     assert call.model == "model-v9"
 
 
+@pytest.mark.parametrize(
+    ("provider_name", "model_name"),
+    [("other-provider", "model-v9"), ("public-test-provider", "other-model")],
+)
+def test_batch_rejects_provider_identity_mismatch_before_model_call(
+    session: Session, provider_name: str, model_name: str
+) -> None:
+    run, _ = _run_with_sample(session, count=1)
+    transport = FlakyTransport()
+
+    with pytest.raises(ValueError, match="provider identity"):
+        run_evaluation_batch(
+            session,
+            run.id,
+            _provider(transport, provider=provider_name, model=model_name),
+        )
+
+    assert transport.requests == []
+
+
 def test_provider_call_runs_outside_database_transaction(session: Session) -> None:
     run, _ = _run_with_sample(session, count=1)
     run_id = run.id
@@ -287,7 +525,7 @@ def test_provider_call_runs_outside_database_transaction(session: Session) -> No
 
     transport = TransactionCheckingTransport()
 
-    run_evaluation_batch(session, run_id, EvaluationProvider(transport))
+    run_evaluation_batch(session, run_id, _provider(transport))
 
     assert transport.transaction_states == [False]
 
