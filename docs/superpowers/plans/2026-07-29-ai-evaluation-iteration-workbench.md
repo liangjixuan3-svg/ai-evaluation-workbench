@@ -192,6 +192,9 @@ git commit -m "chore: scaffold workbench applications"
 ### Task 2: Core Persistence, Audit, and State Enums
 
 **Files:**
+- Modify: `backend/pyproject.toml`
+- Modify: `backend/app/config.py`
+- Modify: `.env.example`
 - Create: `backend/app/shared/enums.py`
 - Create: `backend/app/shared/audit.py`
 - Create: `backend/app/ingestion/models.py`
@@ -228,7 +231,7 @@ Run: `cd backend && TEST_DATABASE_URL=mysql+pymysql://workbench:workbench@127.0.
 
 Expected: FAIL because persistence models do not exist.
 
-- [ ] **Step 3: Implement focused models, foreign keys, indexes, and the initial migration**
+- [ ] **Step 3: Switch the runtime driver to PyMySQL and implement focused models, foreign keys, indexes, and the initial migration**
 
 ```python
 class AlertStatus(StrEnum):
@@ -248,7 +251,7 @@ class RootCause(StrEnum):
     OTHER = "other"
 ```
 
-Create immutable evaluation result rows, append-only QA versions, an audit table, and explicit join tables for cluster members, alert results, QA evidence, and retest samples. Add the unique conversation constraint and queue claim indexes. Configure every table for InnoDB and `utf8mb4`.
+Replace the Task 1 PostgreSQL driver/default URL with PyMySQL and `mysql+pymysql://workbench:workbench@127.0.0.1:3306/workbench?charset=utf8mb4`. Create immutable evaluation result rows, append-only QA versions, an audit table, and explicit join tables for cluster members, alert results, QA evidence, and retest samples. Add the unique conversation constraint and queue claim indexes. Configure every table for InnoDB and `utf8mb4`.
 
 - [ ] **Step 4: Apply migrations and run schema tests**
 
