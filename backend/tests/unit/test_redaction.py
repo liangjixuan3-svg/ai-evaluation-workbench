@@ -16,6 +16,12 @@ def test_redaction_keeps_phone_like_sku_and_redacts_chinese_adjacent_order_id() 
     assert redact_text(text) == "SKUAB13800138000CD，订单[ORDER_ID]"
 
 
+def test_redaction_supports_alphanumeric_order_ids_without_matching_skus() -> None:
+    text = "SKUAB13800138000CD，订单ORD-20260729-8899，订单ORD-20260729-AB12"
+
+    assert redact_text(text) == "SKUAB13800138000CD，订单[ORDER_ID]，订单[ORDER_ID]"
+
+
 def test_redaction_returns_a_copy_without_mutating_source_body() -> None:
     source = ConversationInput(
         external_id="source-1",

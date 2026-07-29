@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from app.ingestion.contracts import ConversationInput, Message, NormalizedConversation
 
 PHONE_PATTERN = re.compile(r"(?<![A-Za-z0-9_])1[3-9]\d{9}(?![A-Za-z0-9_])")
-ORDER_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_])ORD-\d{8}-\d+(?![A-Za-z0-9_])")
+ORDER_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_])ORD-\d{8}-[A-Za-z0-9]+(?![A-Za-z0-9_])")
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 
