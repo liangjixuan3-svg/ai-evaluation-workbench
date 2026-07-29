@@ -87,6 +87,50 @@ def test_provider_evaluation_rejects_evidence_absent_from_input_transcript(
         parse_evaluation_response(payload, evaluation_request)
 
 
+@pytest.mark.parametrize(
+    ("content", "sensitive_value"),
+    [
+        ("请联系 13800138000", "13800138000"),
+        ("订单ORD-20260729-AB12需要处理", "ORD-20260729-AB12"),
+        ("请发送到 customer@example.com", "customer@example.com"),
+    ],
+)
+def test_evaluation_request_rejects_unredacted_sensitive_transcript_values(
+    content: str, sensitive_value: str
+) -> None:
+    conversation = NormalizedConversation(
+        external_id="raw-sensitive-value",
+        scenario=None,
+        status=None,
+        occurred_at=datetime(2026, 7, 30, tzinfo=UTC),
+        messages=(Message(role="user", content=content),),
+    )
+
+    with pytest.raises(ValueError, match="redacted"):
+        EvaluationRequest(conversation=conversation)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "请联系 [PHONE]，订单 [ORDER_ID]，邮箱 [EMAIL]",
+        "SKUAB13800138000CD 不是手机号",
+    ],
+)
+def test_evaluation_request_accepts_redaction_placeholders_and_phone_like_skus(
+    content: str,
+) -> None:
+    conversation = NormalizedConversation(
+        external_id="redacted-value",
+        scenario=None,
+        status=None,
+        occurred_at=datetime(2026, 7, 30, tzinfo=UTC),
+        messages=(Message(role="user", content=content),),
+    )
+
+    assert EvaluationRequest(conversation=conversation).conversation == conversation
+
+
 def test_attribution_parser_accepts_a_json_root_cause(
     evaluation_request: EvaluationRequest,
 ) -> None:
@@ -120,6 +164,125 @@ def test_attribution_parser_accepts_a_json_root_cause(
     )
 
     assert result.root_cause.value == "other"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        {
+            "question": "退款什么时候到账？",
+            "answer": "退款将在三个工作日内原路退回。",
+            "applicability": "适用于退款进度查询。",
+            "handling_steps": ["查询退款状态", "告知处理时效"],
+            "estimated_time": "三个工作日",
+            "escalation": "超过时效后转人工。",
+            "unexpected": "must be rejected",
+        },
+        {
+            "question": {"nested": "must be rejected"},
+            "answer": "退款将在三个工作日内原路退回。",
+            "applicability": "适用于退款进度查询。",
+            "handling_steps": ["查询退款状态"],
+            "estimated_time": "三个工作日",
+            "escalation": "超过时效后转人工。",
+        },
+    ],
+)
+def test_provider_qa_draft_rejects_unknown_and_nested_content_fields(
+    content: dict[str, object],
+) -> None:
+    from app.evaluation.contracts import ProviderQADraft
+
+    with pytest.raises(ValidationError):
+        ProviderQADraft(
+            content=content,
+            reason="基于当前对话生成草稿。",
+            evidence=["退款将在三个工作日内原路退回"],
+            confidence=0.8,
+        )
+
+
+def test_validated_provider_boundary_rejects_fabricated_evidence_for_all_operations(
+    evaluation_request: EvaluationRequest,
+) -> None:
+    from app.evaluation.contracts import ProviderAttribution, ProviderQADraft
+    from app.evaluation.providers import ValidatedEvaluationProvider
+    from app.shared.enums import RootCause
+
+    class FabricatedEvidenceProvider:
+        def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
+            return ProviderEvaluation(
+                dimensions={
+                    "correctness": 100,
+                    "completeness": 100,
+                    "relevance": 100,
+                    "service_experience": 100,
+                    "compliance": 100,
+                },
+                reason="Fabricated evidence.",
+                evidence=["this is not in the transcript"],
+                confidence=1.0,
+            )
+
+        def attribute(self, request: AttributionRequest) -> ProviderAttribution:
+            return ProviderAttribution(
+                root_cause=RootCause.OTHER,
+                reason="Fabricated evidence.",
+                evidence=["this is not in the transcript"],
+                confidence=1.0,
+            )
+
+        def draft_qa(self, request: QADraftRequest) -> ProviderQADraft:
+            return ProviderQADraft(
+                content={
+                    "question": "退款什么时候到账？",
+                    "answer": "退款将在三个工作日内原路退回。",
+                    "applicability": "适用于退款进度查询。",
+                    "handling_steps": ["查询退款状态"],
+                    "estimated_time": "三个工作日",
+                    "escalation": "超过时效后转人工。",
+                },
+                reason="Fabricated evidence.",
+                evidence=["this is not in the transcript"],
+                confidence=1.0,
+            )
+
+    provider = ValidatedEvaluationProvider(FabricatedEvidenceProvider())
+    valid_evaluation = ProviderEvaluation(
+        dimensions={
+            "correctness": 100,
+            "completeness": 100,
+            "relevance": 100,
+            "service_experience": 100,
+            "compliance": 100,
+        },
+        reason="Valid setup.",
+        evidence=["退款将在三个工作日内原路退回"],
+        confidence=1.0,
+    )
+    valid_attribution = ProviderAttribution(
+        root_cause=RootCause.OTHER,
+        reason="Valid setup.",
+        evidence=["退款将在三个工作日内原路退回"],
+        confidence=1.0,
+    )
+
+    with pytest.raises(ValueError, match="evidence"):
+        provider.evaluate(evaluation_request)
+    with pytest.raises(ValueError, match="evidence"):
+        provider.attribute(
+            AttributionRequest(
+                conversation=evaluation_request.conversation,
+                evaluation=valid_evaluation,
+            )
+        )
+    with pytest.raises(ValueError, match="evidence"):
+        provider.draft_qa(
+            QADraftRequest(
+                conversation=evaluation_request.conversation,
+                attribution=valid_attribution,
+            )
+        )
 
 
 @pytest.mark.parametrize(

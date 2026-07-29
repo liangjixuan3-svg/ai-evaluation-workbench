@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ingestion.contracts import NormalizedConversation
+from app.ingestion.redaction import redact_text
 from app.shared.enums import RootCause
 
 EVALUATION_DIMENSIONS = frozenset(
@@ -33,6 +33,8 @@ class _ConversationRequest(_StrictContract):
     def require_transcript_content(cls, value: NormalizedConversation) -> NormalizedConversation:
         if not any(message.content.strip() for message in value.messages):
             raise ValueError("conversation must include transcript content")
+        if any(redact_text(message.content) != message.content for message in value.messages):
+            raise ValueError("conversation transcript must be redacted before provider evaluation")
         return value
 
 
@@ -94,8 +96,33 @@ class QADraftRequest(_ConversationRequest):
     attribution: ProviderAttribution
 
 
+class QADraftContent(_StrictContract):
+    question: str
+    answer: str
+    applicability: str
+    handling_steps: list[str] = Field(min_length=1)
+    estimated_time: str
+    escalation: str
+
+    @field_validator("question", "answer", "applicability", "estimated_time", "escalation")
+    @classmethod
+    def require_nonempty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("QA draft text fields must not be empty")
+        return value
+
+    @field_validator("handling_steps")
+    @classmethod
+    def require_nonempty_steps(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value]
+        if any(not item for item in cleaned):
+            raise ValueError("QA draft handling steps must not be empty")
+        return cleaned
+
+
 class ProviderQADraft(_ProviderResponse):
-    content: dict[str, Any] = Field(min_length=1)
+    content: QADraftContent
 
 
 class EvaluationOutcome(_StrictContract):

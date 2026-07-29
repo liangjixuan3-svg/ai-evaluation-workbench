@@ -85,3 +85,52 @@ def test_scoring_rejects_a_template_weight_for_an_unknown_dimension() -> None:
 
     with pytest.raises(ValueError, match="unknown dimension"):
         calculate_outcome(_result(), template)
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {
+            "correctness": 0.4,
+            "completeness": 0.2,
+            "relevance": 0.15,
+            "service_experience": 0.15,
+        },
+        {
+            "correctness": 0.6,
+            "completeness": 0.2,
+            "relevance": 0.15,
+            "service_experience": 0.15,
+            "compliance": -0.1,
+        },
+        {
+            "correctness": 0.4,
+            "completeness": 0.2,
+            "relevance": 0.15,
+            "service_experience": 0.15,
+            "compliance": float("nan"),
+        },
+        {
+            "correctness": 1.1,
+            "completeness": 0.2,
+            "relevance": 0.15,
+            "service_experience": 0.15,
+            "compliance": 0.1,
+        },
+        {
+            "correctness": 0.1,
+            "completeness": 0.1,
+            "relevance": 0.1,
+            "service_experience": 0.1,
+            "compliance": 0.1,
+        },
+    ],
+)
+def test_scoring_rejects_incomplete_or_invalid_weight_configurations(
+    weights: dict[str, float],
+) -> None:
+    template = _template()
+    template.weights = weights
+
+    with pytest.raises(ValueError, match="weights"):
+        calculate_outcome(_result(), template)

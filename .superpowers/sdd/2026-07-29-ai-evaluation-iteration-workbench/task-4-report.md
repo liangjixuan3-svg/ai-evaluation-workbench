@@ -121,6 +121,117 @@ Observed result: `31 files already formatted`.
 
 ## Concerns
 
-None. Future real provider adapters must call the request-aware parser helpers
-instead of directly constructing provider response models; those helpers are the
-intentional evidence-provenance boundary for Task 12.
+None.
+
+## Fix Round 1
+
+### Implementation
+
+- Added `ValidatedEvaluationProvider` as the public provider boundary around an
+  `EvaluationProvider` implementation. It validates the exact returned response
+  type and verifies every evaluation, attribution, and QA-draft evidence excerpt
+  against the redacted request transcript.
+- Hardened `EvaluationRequest` by reusing Task 3's `redact_text` function to
+  reject any message that would still be redacted. This preserves the existing
+  `[PHONE]`, `[ORDER_ID]`, and `[EMAIL]` placeholders and Task 3's SKU boundary
+  behavior rather than duplicating PII regexes.
+- Required template weights to name exactly the five evaluation dimensions, be
+  finite and within 0..1, and sum to 1 within a `0.000001` Decimal tolerance.
+- Replaced arbitrary QA content dictionaries with a strict `QADraftContent`
+  model: `question`, `answer`, `applicability`, `handling_steps`,
+  `estimated_time`, and `escalation`. Unknown, missing, nested, and blank fields
+  are rejected.
+
+### RED Evidence
+
+Before the production changes, these focused commands failed as expected:
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/contract/test_provider_contract.py \
+-k 'unredacted_sensitive or provider_qa_draft_rejects' -v
+```
+
+Observed result: `5 failed, 14 deselected`. Raw phone, order ID, and email
+transcripts were accepted; unknown and nested QA content was also accepted.
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/unit/test_scoring.py::test_scoring_rejects_incomplete_or_invalid_weight_configurations -v
+```
+
+Observed result: `5 failed`. Incomplete, negative, NaN, oversized, and
+unnormalized weights were accepted or reached uncontrolled downstream errors.
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/contract/test_provider_contract.py::test_validated_provider_boundary_rejects_fabricated_evidence_for_all_operations -v
+```
+
+Observed result: `1 failed` with the expected import error for the missing
+`ValidatedEvaluationProvider`. The test defines a raw custom provider returning
+structurally valid responses with fabricated evidence for all three operations.
+
+### GREEN And Verification
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/contract/test_provider_contract.py tests/unit/test_scoring.py -v
+```
+
+Observed result: `29 passed in 0.18s`.
+
+```sh
+cd backend
+TEST_DATABASE_URL='mysql+pymysql://workbench:workbench@127.0.0.1:3307/workbench_test?charset=utf8mb4' \
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest -v
+```
+
+Observed result: `51 passed in 0.38s`.
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m ruff check app alembic tests
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m ruff format --check app alembic tests
+```
+
+Observed results: `All checks passed!` and `31 files already formatted`.
+
+### Files Changed
+
+- `backend/app/evaluation/contracts.py`
+- `backend/app/evaluation/providers.py`
+- `backend/app/evaluation/scoring.py`
+- `backend/tests/contract/test_provider_contract.py`
+- `backend/tests/unit/test_scoring.py`
+- `.superpowers/sdd/2026-07-29-ai-evaluation-iteration-workbench/task-4-report.md`
+
+### Self-Review
+
+- A custom raw provider is rejected at the public validated boundary when any
+  evidence is absent from the input transcript; all three provider operations are
+  covered by one real behavior test.
+- PII detection delegates to Task 3's established redactor, so placeholders stay
+  valid and the phone-like SKU regression remains protected.
+- Weight validation completes before multiplication, preventing non-finite or
+  invalid configurations from reaching outcome construction.
+- QA content has no free-form or nested value escape hatch, and the deterministic
+  fake provider emits the complete allowlisted structure.
+
+### Concerns
+
+None. Task 5 remains unstarted.
