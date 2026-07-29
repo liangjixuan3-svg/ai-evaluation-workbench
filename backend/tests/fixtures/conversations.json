@@ -1,0 +1,80 @@
+[
+  {
+    "external_id": "refund-001",
+    "scenario": "退款进度",
+    "status": "negative_feedback",
+    "occurred_at": "2026-07-29T09:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "我的订单 ORD-20260729-8899 退款到哪了？电话 13800138000"},
+        {"role": "assistant", "content": "请耐心等待系统处理。"}
+      ],
+      "labels": {"root_cause": "missing_knowledge", "repeated_question": true}
+    }
+  },
+  {
+    "external_id": "logistics-001",
+    "scenario": "物流异常催单",
+    "status": "negative_feedback",
+    "occurred_at": "2026-07-29T10:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "物流三天没有更新，请帮我催一下。"},
+        {"role": "assistant", "content": "包裹已经签收，您再确认一下。"}
+      ],
+      "labels": {"root_cause": "misunderstanding"}
+    }
+  },
+  {
+    "external_id": "refund-002",
+    "scenario": "退款进度",
+    "status": "transferred_to_human",
+    "occurred_at": "2026-07-29T11:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "我已经问第三次退款进度了。"},
+        {"role": "assistant", "content": "我为您转人工继续处理。"}
+      ],
+      "labels": {"root_cause": "process_failure", "repeated_question": true, "transfer_to_human": true}
+    }
+  },
+  {
+    "external_id": "logistics-002",
+    "scenario": "物流异常催单",
+    "status": "negative_feedback",
+    "occurred_at": "2026-07-29T12:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "请告诉我异常物流的下一步。"},
+        {"role": "assistant", "content": "自己去问快递，不要再催。"}
+      ],
+      "labels": {"root_cause": "service_tone"}
+    }
+  },
+  {
+    "external_id": "refund-003",
+    "scenario": "退款进度",
+    "status": "resolved",
+    "occurred_at": "2026-07-29T13:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "退款什么时候到账？"},
+        {"role": "assistant", "content": "退款已原路退回，预计 1 到 3 个工作日到账。"}
+      ],
+      "labels": {"root_cause": "other", "good_response": true}
+    }
+  },
+  {
+    "external_id": "refund-001",
+    "scenario": "退款进度",
+    "status": "negative_feedback",
+    "occurred_at": "2026-07-29T14:00:00+00:00",
+    "body": {
+      "messages": [
+        {"role": "user", "content": "重复发送的退款会话。"},
+        {"role": "assistant", "content": "此记录应按外部 ID 去重。"}
+      ],
+      "labels": {"root_cause": "missing_knowledge"}
+    }
+  }
+]
