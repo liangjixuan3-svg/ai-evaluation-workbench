@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from threading import Barrier
+from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, event, select
 from sqlalchemy.orm import Session
 
 from app.alerts.models import Alert, AlertResult, AlertSignalReceipt
@@ -360,6 +363,134 @@ def test_new_metric_only_window_inside_merge_period_increases_impact(session: Se
     assert newer.id == original.id
     assert newer.impact_count == 8
     assert len(session.scalars(select(AlertSignalReceipt)).all()) == 2
+
+
+def test_concurrent_exact_signal_replay_is_a_single_atomic_mutation(engine) -> None:
+    """A duplicate receipt must win before either worker changes its alert."""
+    suffix = uuid4().hex
+    scenario = f"refund-race-{suffix}"
+    with Session(engine, expire_on_commit=False) as setup_session:
+        source = DataSource(name=f"badcase-race-source-{suffix}", kind="simulated")
+        template = EvaluationTemplate(
+            name=f"badcase-race-template-{suffix}",
+            version="1",
+            weights={"correctness": 1},
+            threshold=Decimal("80.00"),
+            veto_rules={},
+        )
+        prompt = PromptVersion(
+            name=f"badcase-race-prompt-{suffix}", version="1", content="Evaluate"
+        )
+        rule = RuleVersion(kind=f"badcase-race-rule-{suffix}", version="1", config={})
+        run = EvaluationRun(
+            template=template,
+            prompt_version=prompt,
+            rule_version=rule,
+            provider="test",
+            model="attribution-v1",
+            model_parameters={},
+        )
+        results = []
+        for index in range(2):
+            results.append(
+                EvaluationResult(
+                    run=run,
+                    conversation=Conversation(
+                        data_source=source,
+                        external_id=f"badcase-race-{suffix}-{index}",
+                        scenario=scenario,
+                        body={"messages": []},
+                    ),
+                    total_score=Decimal("40.00"),
+                    dimension_scores={
+                        "correctness": 20,
+                        "completeness": 60,
+                        "relevance": 70,
+                        "service_experience": 80,
+                        "compliance": 90,
+                    },
+                    passed=False,
+                    reason="Missing refund policy details",
+                    evidence=["Refund policy requires manager approval."],
+                    confidence=Confidence.HIGH,
+                )
+            )
+        setup_session.add_all(results)
+        setup_session.commit()
+        result_ids = tuple(result.id for result in results)
+        run_id = run.id
+        source_id = source.id
+        template_id = template.id
+        prompt_id = prompt.id
+        rule_id = rule.id
+
+    signal = AlertSignal(
+        kind="issue_spike",
+        priority="P1",
+        scenario=scenario,
+        root_cause=RootCause.MISSING_KNOWLEDGE,
+        baseline_value=0.1,
+        current_value=0.4,
+        impact_count=2,
+        result_ids=result_ids,
+        window_started_at=datetime(2026, 7, 30, tzinfo=UTC),
+        window_ended_at=datetime(2026, 7, 30, 1, tzinfo=UTC),
+        merge_window=timedelta(hours=6),
+    )
+    receipt_barrier = Barrier(2)
+    race_engine = engine.execution_options(isolation_level="READ COMMITTED")
+
+    def synchronize_receipt_insert(*args: object) -> None:
+        statement = args[2]
+        if "INSERT INTO alert_signal_receipts" in str(statement):
+            receipt_barrier.wait(timeout=5)
+
+    event.listen(race_engine, "before_cursor_execute", synchronize_receipt_insert)
+    try:
+
+        def merge_in_separate_session() -> str:
+            with Session(race_engine, expire_on_commit=False) as worker_session:
+                return merge_alert(worker_session, signal).id
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_id, second_id = list(
+                executor.map(lambda _: merge_in_separate_session(), range(2))
+            )
+
+        with Session(engine) as verification_session:
+            alerts = list(verification_session.scalars(select(Alert)))
+            receipts = list(verification_session.scalars(select(AlertSignalReceipt)))
+            links = list(verification_session.scalars(select(AlertResult)))
+
+        assert first_id == second_id
+        assert len(alerts) == 1
+        assert alerts[0].impact_count == 2
+        assert len(receipts) == 1
+        assert receipts[0].alert_id == alerts[0].id
+        assert {link.evaluation_result_id for link in links} == set(result_ids)
+    finally:
+        event.remove(race_engine, "before_cursor_execute", synchronize_receipt_insert)
+        with Session(engine) as cleanup_session:
+            alert_ids = select(Alert.id).where(Alert.merge_key == signal.merge_key)
+            cleanup_session.execute(delete(AlertResult).where(AlertResult.alert_id.in_(alert_ids)))
+            cleanup_session.execute(
+                delete(AlertSignalReceipt).where(AlertSignalReceipt.alert_id.in_(alert_ids))
+            )
+            cleanup_session.execute(delete(Alert).where(Alert.id.in_(alert_ids)))
+            cleanup_session.execute(
+                delete(EvaluationResult).where(EvaluationResult.run_id == run_id)
+            )
+            cleanup_session.execute(
+                delete(Conversation).where(Conversation.data_source_id == source_id)
+            )
+            cleanup_session.execute(delete(EvaluationRun).where(EvaluationRun.id == run_id))
+            cleanup_session.execute(
+                delete(EvaluationTemplate).where(EvaluationTemplate.id == template_id)
+            )
+            cleanup_session.execute(delete(PromptVersion).where(PromptVersion.id == prompt_id))
+            cleanup_session.execute(delete(RuleVersion).where(RuleVersion.id == rule_id))
+            cleanup_session.execute(delete(DataSource).where(DataSource.id == source_id))
+            cleanup_session.commit()
 
 
 def test_alert_api_uses_session_override_and_returns_evidence(session: Session) -> None:

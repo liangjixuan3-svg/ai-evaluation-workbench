@@ -9,16 +9,14 @@ from sqlalchemy.orm import Session
 from app.alerts.models import Alert, AlertResult, AlertSignalReceipt
 from app.alerts.rules import ALERT_PRECEDENCE, AlertSignal
 from app.shared.enums import AlertStatus
+from app.shared.types import new_uuid
 
 
 def merge_alert(session: Session, signal: AlertSignal) -> Alert:
     """Merge a related open alert inside its configured window and retain all result links."""
     existing_receipt = session.get(AlertSignalReceipt, signal.fingerprint)
     if existing_receipt is not None:
-        alert = session.get(Alert, existing_receipt.alert_id)
-        if alert is None:
-            raise LookupError("alert signal receipt references a missing alert")
-        return alert
+        return _receipt_alert(session, existing_receipt)
 
     earliest_end = signal.window_started_at - signal.merge_window
     alert = session.scalar(
@@ -31,22 +29,33 @@ def merge_alert(session: Session, signal: AlertSignal) -> Alert:
         .order_by(Alert.window_ended_at.desc(), Alert.created_at.desc())
         .with_for_update()
     )
-    if alert is None:
-        alert = Alert(
-            kind=signal.kind,
-            priority=signal.priority,
-            scenario=signal.scenario,
-            root_cause=signal.root_cause,
-            merge_key=signal.merge_key,
-            baseline_value=Decimal(str(signal.baseline_value)),
-            current_value=Decimal(str(signal.current_value)),
-            impact_count=0,
-            window_started_at=signal.window_started_at,
-            window_ended_at=signal.window_ended_at,
+    candidate = _new_alert(signal) if alert is None else None
+
+    # Insert the receipt and a possible new alert in one savepoint before changing
+    # impact, windows, or result links. A losing concurrent replay rolls back cleanly.
+    try:
+        with session.begin_nested():
+            if candidate is not None:
+                session.add(candidate)
+                alert = candidate
+            assert alert is not None
+            session.add(AlertSignalReceipt(fingerprint=signal.fingerprint, alert_id=alert.id))
+            session.flush()
+    except IntegrityError:
+        receipt = session.scalar(
+            select(AlertSignalReceipt)
+            .where(AlertSignalReceipt.fingerprint == signal.fingerprint)
+            .with_for_update()
         )
-        session.add(alert)
-        session.flush()
-    else:
+        if receipt is None:
+            session.rollback()
+            raise
+        alert = _receipt_alert(session, receipt)
+        session.commit()
+        return alert
+
+    assert alert is not None
+    if candidate is None:
         if ALERT_PRECEDENCE.get(signal.kind, float("inf")) < ALERT_PRECEDENCE.get(
             alert.kind, float("inf")
         ):
@@ -69,16 +78,28 @@ def merge_alert(session: Session, signal: AlertSignal) -> Alert:
         AlertResult(alert_id=alert.id, evaluation_result_id=result_id) for result_id in new_ids
     )
     alert.impact_count += len(new_ids) or (signal.impact_count if not existing_ids else 0)
-    try:
-        with session.begin_nested():
-            session.add(AlertSignalReceipt(fingerprint=signal.fingerprint, alert_id=alert.id))
-            session.flush()
-    except IntegrityError:
-        receipt = session.get(AlertSignalReceipt, signal.fingerprint)
-        if receipt is None:
-            raise
-        alert = session.get(Alert, receipt.alert_id)
-        if alert is None:
-            raise LookupError("alert signal receipt references a missing alert")
     session.commit()
+    return alert
+
+
+def _new_alert(signal: AlertSignal) -> Alert:
+    return Alert(
+        id=new_uuid(),
+        kind=signal.kind,
+        priority=signal.priority,
+        scenario=signal.scenario,
+        root_cause=signal.root_cause,
+        merge_key=signal.merge_key,
+        baseline_value=Decimal(str(signal.baseline_value)),
+        current_value=Decimal(str(signal.current_value)),
+        impact_count=0,
+        window_started_at=signal.window_started_at,
+        window_ended_at=signal.window_ended_at,
+    )
+
+
+def _receipt_alert(session: Session, receipt: AlertSignalReceipt) -> Alert:
+    alert = session.get(Alert, receipt.alert_id)
+    if alert is None:
+        raise LookupError("alert signal receipt references a missing alert")
     return alert
