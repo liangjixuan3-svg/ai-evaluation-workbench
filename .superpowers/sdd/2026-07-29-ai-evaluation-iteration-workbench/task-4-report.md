@@ -59,7 +59,7 @@ PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
 -m pytest tests/contract/test_provider_contract.py tests/unit/test_scoring.py -v
 ```
 
-Observed result: `15 passed in 0.22s`. This includes valid fixture parsing,
+Observed result: `16 passed in 0.25s`. This includes valid fixture parsing,
 unknown dimensions, numeric range and NaN rejection, empty reasons, evidence
 provenance, malformed/truncated/non-JSON failures, fake-provider determinism,
 weighted scoring, and both veto paths.
@@ -74,7 +74,7 @@ PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
 -m pytest -v
 ```
 
-Observed result: `37 passed in 0.39s` after allowing the standard local MySQL
+Observed result: `38 passed in 0.36s` after allowing the standard local MySQL
 test connection.
 
 ```sh
@@ -106,6 +106,18 @@ Observed result: `31 files already formatted`.
   and non-JSON text.
 - Confirmed both factual and compliance flags override an otherwise passing score.
 - Ran `git diff --check`; it reported no whitespace errors.
+
+## Post-Commit Review Fix
+
+- Post-commit review found that globally strict Pydantic validation rejected the
+  legitimate JSON string `"other"` for `ProviderAttribution.root_cause`, because
+  the parser has already converted JSON into a mapping before validation.
+- Added `test_attribution_parser_accepts_a_json_root_cause` first. It failed with
+  `Input should be an instance of RootCause`.
+- The `root_cause` field now explicitly accepts the JSON enum representation while
+  still rejecting any value outside the existing `RootCause` enum. The focused
+  suite then passed with `16 passed in 0.25s`; final full verification passed with
+  `38 passed in 0.36s`.
 
 ## Concerns
 

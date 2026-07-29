@@ -87,7 +87,7 @@ class AttributionRequest(_ConversationRequest):
 
 
 class ProviderAttribution(_ProviderResponse):
-    root_cause: RootCause
+    root_cause: RootCause = Field(strict=False)
 
 
 class QADraftRequest(_ConversationRequest):

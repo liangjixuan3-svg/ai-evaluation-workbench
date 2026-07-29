@@ -18,6 +18,7 @@ from app.evaluation.providers import (
     EvaluationProvider,
     FakeEvaluationProvider,
     ProviderResponseFormatError,
+    parse_attribution_response,
     parse_evaluation_response,
 )
 from app.ingestion.contracts import Message, NormalizedConversation
@@ -84,6 +85,41 @@ def test_provider_evaluation_rejects_evidence_absent_from_input_transcript(
 
     with pytest.raises(ValueError, match="evidence"):
         parse_evaluation_response(payload, evaluation_request)
+
+
+def test_attribution_parser_accepts_a_json_root_cause(
+    evaluation_request: EvaluationRequest,
+) -> None:
+    request = AttributionRequest(
+        conversation=evaluation_request.conversation,
+        evaluation=parse_evaluation_response(
+            {
+                "dimensions": {
+                    "correctness": 90,
+                    "completeness": 80,
+                    "relevance": 85,
+                    "service_experience": 88,
+                    "compliance": 100,
+                },
+                "reason": "客服说明了退款处理时效。",
+                "evidence": ["退款将在三个工作日内原路退回"],
+                "confidence": 0.92,
+            },
+            evaluation_request,
+        ),
+    )
+
+    result = parse_attribution_response(
+        {
+            "root_cause": "other",
+            "reason": "需要人工确认具体根因。",
+            "evidence": ["退款将在三个工作日内原路退回"],
+            "confidence": 0.8,
+        },
+        request,
+    )
+
+    assert result.root_cause.value == "other"
 
 
 @pytest.mark.parametrize(
