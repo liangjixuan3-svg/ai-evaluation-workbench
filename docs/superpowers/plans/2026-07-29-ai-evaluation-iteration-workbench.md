@@ -196,6 +196,7 @@ git commit -m "chore: scaffold workbench applications"
 - Modify: `backend/app/config.py`
 - Modify: `.env.example`
 - Create: `backend/app/shared/enums.py`
+- Create: `backend/app/shared/types.py`
 - Create: `backend/app/shared/audit.py`
 - Create: `backend/app/ingestion/models.py`
 - Create: `backend/app/evaluation/models.py`
@@ -210,6 +211,39 @@ git commit -m "chore: scaffold workbench applications"
 **Interfaces:**
 - Consumes: `app.db.Base` and `app.db.session_factory` from Task 1.
 - Produces: SQLAlchemy models and enums `AlertStatus`, `TaskType`, `RootCause`, `Confidence`, `QADraftStatus`, and `RunStatus`; `record_audit(session, actor, action, entity_type, entity_id, payload)`.
+
+**Schema contract:**
+
+- IDs are UUID strings stored as `CHAR(36)`. All tables use InnoDB and `utf8mb4`.
+- `UTCDateTime` stores UTC-normalized values in MySQL `DATETIME(6)` without an offset and restores timezone-aware UTC values on ORM reads. `utc_now()` is the only Python default for timestamps.
+- SQLAlchemy enums use `VARCHAR(32)` (`native_enum=False`) so adding states does not require altering a native MySQL enum.
+- `AlertStatus`: `OPEN="open"`, `ANALYZING="analyzing"`, `AWAITING_FIX="awaiting_fix"`, `AWAITING_RETEST="awaiting_retest"`, `RECOVERED="recovered"`, `NOT_RECOVERED="not_recovered"`, `FALSE_POSITIVE="false_positive"`.
+- `RootCause`: `MISSING_KNOWLEDGE="missing_knowledge"`, `MISUNDERSTANDING="misunderstanding"`, `PROCESS_FAILURE="process_failure"`, `SERVICE_TONE="service_tone"`, `OTHER="other"`.
+- `TaskType`: `ATTRIBUTION_REVIEW="attribution_review"`, `QA_REVIEW="qa_review"`, `PROMPT_OPTIMIZATION="prompt_optimization"`, `PROCESS_INVESTIGATION="process_investigation"`, `TONE_OPTIMIZATION="tone_optimization"`, `EVALUATION_CALIBRATION="evaluation_calibration"`, `RETEST="retest"`.
+- `Confidence`: `HIGH="high"`, `MEDIUM="medium"`, `LOW="low"`.
+- `QADraftStatus`: `DRAFT="draft"`, `PENDING_REVIEW="pending_review"`, `APPROVED="approved"`, `REJECTED="rejected"`, `REGENERATION_REQUESTED="regeneration_requested"`.
+- `RunStatus`: `QUEUED="queued"`, `RUNNING="running"`, `SUCCEEDED="succeeded"`, `PARTIAL="partial"`, `FAILED="failed"`, `MANUAL_REVIEW="manual_review"`.
+- Add internal string enums `TaskStatus(open,in_progress,done,cancelled)`, `JobStatus(queued,claimed,succeeded,failed,manual_review)`, `RetestStatus(queued,running,recovered,not_recovered,failed)`, and `RetestCohort(replay,new)` with uppercase member names and the listed lowercase values.
+- `DataSource`: id, unique name, kind, config JSON, enabled, created_at, updated_at.
+- `Conversation`: id, data_source_id FK, external_id, scenario nullable, status nullable, body JSON, occurred_at, created_at; unique `(data_source_id, external_id)`.
+- `SamplingBatch`: id, policy_version, seed, status, selected_count, created_at, started_at nullable, completed_at nullable. `SamplingBatchConversation`: batch_id + conversation_id composite PK, selection_reason.
+- `EvaluationTemplate`: id, name, version, weights JSON, threshold `DECIMAL(5,2)`, veto_rules JSON, active, created_at; unique `(name, version)`.
+- `PromptVersion`: id, name, version, content TEXT, active, created_at; unique `(name, version)`. `RuleVersion`: id, kind, version, config JSON, active, created_at; unique `(kind, version)`.
+- `EvaluationRun`: id, sampling_batch_id nullable FK, template_id FK, prompt_version_id FK, rule_version_id FK, provider, model, model_parameters JSON, status, succeeded_count, failed_count, created_at, started_at nullable, completed_at nullable.
+- `EvaluationResult`: id, run_id FK, conversation_id FK, total_score `DECIMAL(5,2)`, dimension_scores JSON, passed, reason TEXT, evidence JSON, confidence, severe_factual_error, severe_compliance_error, created_at; unique `(run_id, conversation_id)`.
+- `BadcaseCluster`: id, run_id FK, scenario nullable, weakest_dimension, normalized_reason TEXT, algorithm_version, created_at. `ClusterMember`: cluster_id + evaluation_result_id composite PK, representative_rank nullable, confirmed_root_cause nullable, confirmed_by nullable, confirmed_at nullable.
+- `RootCauseSuggestion`: id, cluster_id FK, root_cause, reason TEXT, evidence JSON, confidence, created_at. A cluster may have many suggestions; later services choose the latest.
+- `Alert`: id, kind, priority, scenario nullable, root_cause nullable, status, merge_key, baseline_value/current_value `DECIMAL(8,4)`, impact_count, window_started_at, window_ended_at, created_at, updated_at. Index `(status, merge_key)`; do not make merge_key unique because closed alerts retain history. `AlertResult`: alert_id + evaluation_result_id composite PK.
+- `Task`: id, type, status, alert_id nullable FK, cluster_id nullable FK, title, priority, payload JSON, created_at, updated_at, completed_at nullable.
+- `QADraft`: id, cluster_id FK, task_id nullable FK, status, current_version_number, confidence, created_at, updated_at. `QAVersion`: id, draft_id FK, version_number, content JSON, created_by, approved_by nullable, approved_at nullable, created_at; unique `(draft_id, version_number)`.
+- `QAEvidence`: id, qa_version_id FK, source_type, source_ref, excerpt TEXT, conversation_id nullable FK, evaluation_result_id nullable FK, created_at. Evidence belongs to the immutable version it supports, not the mutable draft lifecycle.
+- `ExportRecord`: id, format, created_by, artifact_path, artifact_hash, status, created_at. `QAExportItem`: export_id + qa_version_id composite PK.
+- `RetestRun`: id, alert_id FK, qa_version_id nullable FK, rule_version_id FK, status, before_pass_rate/replay_pass_rate/new_sample_pass_rate nullable `DECIMAL(8,4)`, created_at, started_at nullable, completed_at nullable.
+- `RetestSample`: retest_run_id + conversation_id + cohort composite PK, source_evaluation_result_id nullable FK, retest_evaluation_result_id nullable FK. A sample always references a conversation; result links describe before/after evaluations.
+- `Job`: id, kind, payload JSON, status, unique idempotency_key, attempts, max_attempts, run_after, claimed_by nullable, claimed_at nullable, last_error TEXT nullable, created_at, updated_at. Add claim index `(status, run_after, created_at)`.
+- `ModelCallRecord`: id, evaluation_run_id nullable FK, provider, model, operation, provider_request_id nullable, input_tokens, output_tokens, estimated_cost `DECIMAL(12,6)`, status, error_code nullable, duration_ms, created_at.
+- `AuditEvent`: id, actor, action, entity_type, entity_id, payload JSON, created_at. `record_audit` inserts and flushes an event but leaves commit ownership to the caller.
+- ORM `before_update` and `before_delete` listeners reject mutation of `EvaluationResult` and `QAVersion`; do not add database triggers. New evaluations and QA edits create new rows.
 
 - [ ] **Step 1: Write schema invariants as an integration test**
 
