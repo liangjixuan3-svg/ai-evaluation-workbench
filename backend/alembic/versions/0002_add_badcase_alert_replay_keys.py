@@ -218,8 +218,8 @@ def _grouping_key(scenario: str | None, weakest_dimension: str, normalized_reaso
 
 def downgrade() -> None:
     op.drop_table("alert_signal_receipts")
-    op.drop_constraint("uq_root_suggestion_replay", "root_cause_suggestions", type_="unique")
     op.drop_constraint("fk_root_suggestion_result", "root_cause_suggestions", type_="foreignkey")
+    op.drop_constraint("uq_root_suggestion_replay", "root_cause_suggestions", type_="unique")
     op.drop_column("root_cause_suggestions", "model")
     op.drop_column("root_cause_suggestions", "provider")
     op.drop_column("root_cause_suggestions", "evaluation_result_id")
