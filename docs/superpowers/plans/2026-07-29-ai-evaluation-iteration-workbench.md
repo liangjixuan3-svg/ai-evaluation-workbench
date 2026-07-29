@@ -4,14 +4,15 @@
 
 **Goal:** Build a single-server AI quality operations workbench that turns sampled customer-service conversations into traceable evaluations, actionable alerts, confirmed root causes, reviewable QA drafts, and verified retest outcomes.
 
-**Architecture:** Use a modular monolith with a React/TypeScript browser client, a FastAPI application, a PostgreSQL database-backed job queue, and a separate worker process importing the same Python application modules. Implement one complete vertical slice first and keep model providers behind typed adapters so deterministic fake responses can drive tests and demos.
+**Architecture:** Use a modular monolith with a React/TypeScript browser client, a FastAPI application, a MySQL/InnoDB database-backed job queue, and a separate worker process importing the same Python application modules. Implement one complete vertical slice first and keep model providers behind typed adapters so deterministic fake responses can drive tests and demos.
 
-**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2, Alembic, PostgreSQL 16, pytest, React 19, TypeScript 5, Vite, React Router, TanStack Query, Vitest, Testing Library, Playwright, Docker Compose.
+**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2, Alembic, MySQL 8.0+ with InnoDB, PyMySQL, pytest, React 19, TypeScript 5, Vite, React Router, TanStack Query, Vitest, Testing Library, Playwright, Docker Compose.
 
 ## Global Constraints
 
 - One maintainer, one server, and fewer than 10,000 source conversations per day.
-- Deploy exactly three containers for v1: `web`, `worker`, and `postgres`.
+- Deploy exactly three containers for v1: `web`, `worker`, and `mysql`.
+- Use MySQL 8.0+ with InnoDB and `utf8mb4`; queue claiming must use `SELECT ... FOR UPDATE SKIP LOCKED`.
 - Do not add Redis, Kafka, microservices, a standalone workflow engine, multi-tenancy, or direct knowledge-base writes.
 - The task workbench is the default route; dashboards and pipeline history are supporting views.
 - AI may suggest evaluations, root causes, and QA drafts, but humans confirm attribution and approve QA exports.
@@ -82,7 +83,7 @@ backend/
       router.py             # Settings and operations endpoints
   tests/
     unit/                   # Pure rule and state-machine tests
-    integration/            # PostgreSQL-backed repository/service tests
+    integration/            # MySQL-backed repository/service tests
     contract/               # Provider response compatibility tests
     e2e/                    # Full API workflow test
     fixtures/               # Simulated conversations and golden labels
@@ -169,7 +170,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-Set Python dependencies for FastAPI, Pydantic Settings, SQLAlchemy, psycopg, Alembic, pytest, httpx, and ruff. Set frontend scripts for `dev`, `build`, `test`, and `test:e2e`; add React, Vite, TypeScript, React Router, TanStack Query, Vitest, Testing Library, and Playwright.
+Set Python dependencies for FastAPI, Pydantic Settings, SQLAlchemy, PyMySQL, Alembic, pytest, httpx, and ruff. Set frontend scripts for `dev`, `build`, `test`, and `test:e2e`; add React, Vite, TypeScript, React Router, TanStack Query, Vitest, Testing Library, and Playwright.
 
 - [ ] **Step 4: Run backend tests and frontend type checking**
 
@@ -221,9 +222,9 @@ def test_conversation_external_id_is_unique_per_source(session):
         session.commit()
 ```
 
-- [ ] **Step 2: Run the schema test against the test PostgreSQL database**
+- [ ] **Step 2: Run the schema test against the test MySQL database**
 
-Run: `cd backend && TEST_DATABASE_URL=postgresql+psycopg://workbench:workbench@localhost:5432/workbench_test python -m pytest tests/integration/test_schema.py -v`
+Run: `cd backend && TEST_DATABASE_URL=mysql+pymysql://workbench:workbench@127.0.0.1:3306/workbench_test?charset=utf8mb4 python -m pytest tests/integration/test_schema.py -v`
 
 Expected: FAIL because persistence models do not exist.
 
@@ -247,7 +248,7 @@ class RootCause(StrEnum):
     OTHER = "other"
 ```
 
-Create immutable evaluation result rows, append-only QA versions, an audit table, and explicit join tables for cluster members, alert results, QA evidence, and retest samples. Add the unique conversation constraint and queue claim indexes.
+Create immutable evaluation result rows, append-only QA versions, an audit table, and explicit join tables for cluster members, alert results, QA evidence, and retest samples. Add the unique conversation constraint and queue claim indexes. Configure every table for InnoDB and `utf8mb4`.
 
 - [ ] **Step 4: Apply migrations and run schema tests**
 
@@ -938,14 +939,15 @@ Expected: backend and frontend unit tests pass; full-loop test fails until demo 
 services:
   web:
     build: {context: .., dockerfile: deploy/Dockerfile.web}
-    depends_on: [postgres]
+    depends_on: [mysql]
   worker:
     build: {context: .., dockerfile: deploy/Dockerfile.worker}
     command: ["python", "-m", "app.jobs.worker"]
-    depends_on: [postgres]
-  postgres:
-    image: postgres:16
-    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    depends_on: [mysql]
+  mysql:
+    image: mysql:8.4
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    volumes: ["mysql_data:/var/lib/mysql"]
 ```
 
 The golden check must compare pass/fail agreement, dimension mean absolute error, root-cause agreement, and severe-error recall against configurable committed thresholds. `README.md` must document prerequisites, environment setup, migrations, local testing without Docker, backup, restore, retrying a stuck job, and changing the model provider.
@@ -962,7 +964,7 @@ Expected: simulated data creates at least one issue-spike alert, one confirmed m
 
 Run after Docker is installed: `docker compose -f deploy/docker-compose.yml config`
 
-Expected: configuration is valid and contains exactly `web`, `worker`, and `postgres` services.
+Expected: configuration is valid and contains exactly `web`, `worker`, and `mysql` services.
 
 - [ ] **Step 5: Commit the deployable vertical slice**
 
