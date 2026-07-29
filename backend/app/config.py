@@ -3,7 +3,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_env: str = "development"
-    database_url: str = "postgresql+psycopg://workbench:workbench@localhost:5432/workbench"
+    database_url: str = (
+        "mysql+pymysql://workbench:workbench@127.0.0.1:3306/workbench?charset=utf8mb4"
+    )
     model_provider: str = "fake"
     model_api_key: str = ""
 
