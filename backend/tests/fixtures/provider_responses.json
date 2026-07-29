@@ -1,0 +1,31 @@
+{
+  "valid_evaluation": {
+    "dimensions": {
+      "correctness": 90,
+      "completeness": 80,
+      "relevance": 85,
+      "service_experience": 88,
+      "compliance": 100
+    },
+    "severe_factual_error": false,
+    "severe_compliance_error": false,
+    "reason": "客服说明了退款处理时效。",
+    "evidence": ["退款将在三个工作日内原路退回"],
+    "confidence": 0.92
+  },
+  "malformed_evaluation": {
+    "dimensions": {
+      "correctness": 90,
+      "completeness": 80,
+      "relevance": 85,
+      "service_experience": 88,
+      "compliance": 100
+    },
+    "severe_factual_error": false,
+    "severe_compliance_error": false,
+    "evidence": ["退款将在三个工作日内原路退回"],
+    "confidence": 0.92
+  },
+  "truncated_evaluation": "{\"dimensions\": {\"correctness\": 90",
+  "non_json_evaluation": "The customer service answer is acceptable."
+}
