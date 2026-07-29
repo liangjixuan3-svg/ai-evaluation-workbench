@@ -1,1 +1,6 @@
 .worktrees/
+backend/.pytest_cache/
+backend/*.egg-info/
+backend/**/__pycache__/
+frontend/dist/
+frontend/node_modules/
