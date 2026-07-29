@@ -105,14 +105,6 @@ def export_qa(
                     QAExportItem(export_id=record.id, qa_version_id=draft.current_version.id)
                     for draft in drafts
                 )
-                record_audit(
-                    session,
-                    actor=actor,
-                    action="qa_exported",
-                    entity_type="export_record",
-                    entity_id=record.id,
-                    payload={"evidence": [], "metadata": metadata, "draft_ids": sorted(draft_ids)},
-                )
         except IntegrityError:
             record = session.scalar(
                 select(ExportRecord)
@@ -124,6 +116,14 @@ def export_qa(
             )
             if record is None:
                 raise
+    record_audit(
+        session,
+        actor=actor,
+        action="qa_exported",
+        entity_type="export_record",
+        entity_id=record.id,
+        payload={"evidence": [], "metadata": metadata, "draft_ids": sorted(draft_ids)},
+    )
     session.commit()
     return ExportArtifact(record=record, content=content, media_type=media_type, metadata=metadata)
 

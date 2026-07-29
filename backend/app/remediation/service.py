@@ -63,8 +63,9 @@ def confirm_attribution(session: Session, command: AttributionCommand) -> Task |
     cluster = session.get(BadcaseCluster, command.cluster_id)
     if cluster is None:
         raise LookupError(f"badcase cluster {command.cluster_id} does not exist")
-    if not command.actor.strip() or not command.evidence:
+    if not command.actor.strip():
         raise AttributionConfirmationError("actor and human confirmation evidence are required")
+    evidence = _validated_confirmation_evidence(command.evidence)
     members = list(
         session.scalars(
             select(ClusterMember)
@@ -89,7 +90,7 @@ def confirm_attribution(session: Session, command: AttributionCommand) -> Task |
         entity_type="badcase_cluster",
         entity_id=command.cluster_id,
         payload={
-            "evidence": list(command.evidence),
+            "evidence": list(evidence),
             "root_cause": command.root_cause.value,
             "member_ids": [member.evaluation_result_id for member in selected_members],
             "bulk": command.bulk,
@@ -98,7 +99,7 @@ def confirm_attribution(session: Session, command: AttributionCommand) -> Task |
     if not all(member.confirmed_root_cause is not None for member in members):
         session.commit()
         return None
-    tasks = _route_confirmed_members(session, cluster, members, command.actor, command.evidence)
+    tasks = _route_confirmed_members(session, cluster, members, command.actor, evidence)
     session.commit()
     return tasks.get(command.root_cause)
 
@@ -134,16 +135,27 @@ def generate_qa_draft(session: Session, cluster_id: str, provider: EvaluationPro
     existing = session.scalar(select(QADraft).where(QADraft.task_id == task.id).with_for_update())
     if existing is not None:
         return existing
-    representative = _representative_result(session, members)
-    suggestion = _suggestion(session, cluster_id, representative.id)
+    representative_member, representative, suggestion = _representative_attribution(
+        session, cluster_id, members
+    )
+    confirmed_root_cause = representative_member.confirmed_root_cause
+    assert confirmed_root_cause is not None
+    if suggestion is None:
+        attribution_reason = representative.reason
+        attribution_evidence = representative.evidence
+        attribution_confidence = representative.confidence
+    else:
+        attribution_reason = suggestion.reason
+        attribution_evidence = suggestion.evidence
+        attribution_confidence = suggestion.confidence
     response = provider.draft_qa(
         QADraftRequest(
             conversation=redact_conversation(representative.conversation),
             attribution=ProviderAttribution(
-                root_cause=suggestion.root_cause,
-                reason=suggestion.reason,
-                evidence=suggestion.evidence,
-                confidence=_provider_confidence(suggestion.confidence),
+                root_cause=confirmed_root_cause,
+                reason=attribution_reason,
+                evidence=attribution_evidence,
+                confidence=_provider_confidence(attribution_confidence),
             ),
         )
     )
@@ -177,6 +189,11 @@ def generate_qa_draft(session: Session, cluster_id: str, provider: EvaluationPro
                     "evidence": list(response.evidence),
                     "cluster_id": cluster_id,
                     "version_number": 1,
+                    "confirmed_root_cause": confirmed_root_cause.value,
+                    "ai_suggestion_id": suggestion.id if suggestion is not None else None,
+                    "ai_root_cause": (
+                        suggestion.root_cause.value if suggestion is not None else None
+                    ),
                 },
             )
     except IntegrityError:
@@ -194,7 +211,7 @@ def approve_qa(
     session: Session, draft_id: str, actor: str, edits: Mapping[str, Any] | None
 ) -> QAVersion:
     """Approve by appending a new immutable version, never changing a prior version."""
-    draft = session.get(QADraft, draft_id)
+    draft = session.scalar(select(QADraft).where(QADraft.id == draft_id).with_for_update())
     if draft is None:
         raise LookupError(f"QA draft {draft_id} does not exist")
     if not actor.strip():
@@ -204,7 +221,16 @@ def approve_qa(
     if not isinstance(business_evidence, list) or not business_evidence:
         raise MissingBusinessEvidence("business evidence is required before approval")
     validated_evidence = _validated_business_evidence(business_evidence)
-    previous = draft.current_version
+    previous = session.scalar(
+        select(QAVersion)
+        .where(
+            QAVersion.draft_id == draft.id,
+            QAVersion.version_number == draft.current_version_number,
+        )
+        .with_for_update()
+    )
+    if previous is None:
+        raise LookupError("QA draft current version does not exist")
     content = dict(previous.content)
     content.update(update)
     validated_content = QADraftContent.model_validate(content)
@@ -266,6 +292,14 @@ def _members_to_confirm(
     return selected_members
 
 
+def _validated_confirmation_evidence(evidence: tuple[str, ...]) -> tuple[str, ...]:
+    if not evidence:
+        raise AttributionConfirmationError("actor and human confirmation evidence are required")
+    if any(not isinstance(item, str) or not item.strip() for item in evidence):
+        raise AttributionConfirmationError("human confirmation evidence entries must not be blank")
+    return tuple(item.strip() for item in evidence)
+
+
 def _route_confirmed_members(
     session: Session,
     cluster: BadcaseCluster,
@@ -307,40 +341,35 @@ def _route_confirmed_members(
     return tasks
 
 
-def _representative_result(session: Session, members: list[ClusterMember]) -> EvaluationResult:
-    result = session.get(EvaluationResult, members[0].evaluation_result_id)
-    if result is None:
-        raise LookupError("cluster member references a missing evaluation result")
-    return result
-
-
-def _suggestion(
-    session: Session, cluster_id: str, evaluation_result_id: str
-) -> RootCauseSuggestion:
-    suggestion = session.scalar(
-        select(RootCauseSuggestion)
-        .where(
-            RootCauseSuggestion.cluster_id == cluster_id,
-            RootCauseSuggestion.evaluation_result_id == evaluation_result_id,
-        )
-        .order_by(RootCauseSuggestion.created_at.desc())
-    )
-    if suggestion is None:
+def _representative_attribution(
+    session: Session, cluster_id: str, members: list[ClusterMember]
+) -> tuple[ClusterMember, EvaluationResult, RootCauseSuggestion | None]:
+    fallback: tuple[ClusterMember, EvaluationResult] | None = None
+    for member in members:
+        result = session.get(EvaluationResult, member.evaluation_result_id)
+        if result is None:
+            raise LookupError("cluster member references a missing evaluation result")
+        if fallback is None:
+            fallback = (member, result)
         suggestion = session.scalar(
             select(RootCauseSuggestion)
-            .where(RootCauseSuggestion.cluster_id == cluster_id)
-            .order_by(RootCauseSuggestion.created_at.desc())
+            .where(
+                RootCauseSuggestion.cluster_id == cluster_id,
+                RootCauseSuggestion.evaluation_result_id == result.id,
+            )
+            .order_by(RootCauseSuggestion.created_at.desc(), RootCauseSuggestion.id.desc())
         )
-    if suggestion is None:
-        raise IncompleteAttribution("QA drafting requires an AI attribution suggestion")
-    return suggestion
+        if suggestion is not None:
+            return member, result, suggestion
+    assert fallback is not None
+    return fallback[0], fallback[1], None
 
 
 def _add_generation_evidence(
     session: Session,
     version: QAVersion,
     provider_evidence: list[str],
-    suggestion: RootCauseSuggestion,
+    suggestion: RootCauseSuggestion | None,
     representative: EvaluationResult,
 ) -> None:
     session.add_all(
@@ -354,15 +383,28 @@ def _add_generation_evidence(
         )
         for excerpt in provider_evidence
     )
+    if suggestion is not None:
+        session.add_all(
+            QAEvidence(
+                qa_version_id=version.id,
+                source_type="ai_attribution",
+                source_ref=f"root_cause_suggestion:{suggestion.id}",
+                excerpt=excerpt,
+                evaluation_result_id=suggestion.evaluation_result_id,
+            )
+            for excerpt in suggestion.evidence
+        )
+        return
     session.add_all(
         QAEvidence(
             qa_version_id=version.id,
-            source_type="ai_attribution",
-            source_ref=f"root_cause_suggestion:{suggestion.id}",
+            source_type="confirmed_evaluation",
+            source_ref=f"evaluation_result:{representative.id}",
             excerpt=excerpt,
+            conversation_id=representative.conversation_id,
             evaluation_result_id=representative.id,
         )
-        for excerpt in suggestion.evidence
+        for excerpt in representative.evidence
     )
 
 

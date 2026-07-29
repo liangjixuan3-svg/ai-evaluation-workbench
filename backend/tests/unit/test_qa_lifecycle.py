@@ -5,13 +5,15 @@ import io
 import json
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.alerts.models import Task
@@ -19,8 +21,9 @@ from app.analysis.models import BadcaseCluster
 from app.evaluation.models import EvaluationRun, EvaluationTemplate, PromptVersion, RuleVersion
 from app.ingestion.models import DataSource
 from app.remediation.export import InvalidQAState, QAExportDocument, export_qa
-from app.remediation.models import QADraft, QAVersion
+from app.remediation.models import ExportRecord, QADraft, QAVersion
 from app.remediation.service import MissingBusinessEvidence, approve_qa
+from app.shared.audit import AuditEvent
 from app.shared.enums import Confidence, QADraftStatus, TaskType
 
 
@@ -55,6 +58,10 @@ def business_evidence() -> dict[str, str]:
 
 @pytest.fixture
 def draft(session: Session) -> QADraft:
+    return _create_draft(session)
+
+
+def _create_draft(session: Session) -> QADraft:
     suffix = uuid4().hex
     source = DataSource(name=f"qa-source-{suffix}", kind="test")
     template = EvaluationTemplate(
@@ -154,6 +161,70 @@ def test_approval_appends_an_immutable_version(session, draft, business_evidence
     assert approved.approved_by == "operator-1"
 
 
+def test_approval_locks_draft_before_reading_current_version(
+    session, draft, business_evidence
+) -> None:
+    draft_id = draft.id
+    session.expunge_all()
+    draft_select_locks: list[bool] = []
+
+    def capture_draft_select(execute_state) -> None:
+        if not execute_state.is_select:
+            return
+        if any(
+            description.get("entity") is QADraft
+            for description in execute_state.statement.column_descriptions
+        ):
+            draft_select_locks.append(execute_state.statement._for_update_arg is not None)
+
+    event.listen(session, "do_orm_execute", capture_draft_select)
+    try:
+        approve_qa(
+            session,
+            draft_id,
+            actor="operator-1",
+            edits={"business_evidence": [business_evidence]},
+        )
+    finally:
+        event.remove(session, "do_orm_execute", capture_draft_select)
+
+    assert draft_select_locks[0] is True
+
+
+def test_concurrent_approvals_serialize_across_two_sessions(engine, business_evidence) -> None:
+    if engine.dialect.name != "mysql":
+        pytest.skip("row-lock concurrency semantics require MySQL/InnoDB")
+    with Session(engine, expire_on_commit=False) as seed_session:
+        draft_id = _create_draft(seed_session).id
+    barrier = Barrier(2)
+
+    def approve(actor: str, answer: str) -> int:
+        with Session(engine, expire_on_commit=False) as worker_session:
+            barrier.wait()
+            return approve_qa(
+                worker_session,
+                draft_id,
+                actor=actor,
+                edits={
+                    "answer": answer,
+                    "business_evidence": [business_evidence],
+                },
+            ).version_number
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(approve, "operator-a", "并发答案 A"),
+            executor.submit(approve, "operator-b", "并发答案 B"),
+        ]
+        version_numbers = sorted(future.result(timeout=10) for future in futures)
+
+    assert version_numbers == [2, 3]
+    with Session(engine) as verification_session:
+        draft = verification_session.get(QADraft, draft_id)
+        assert draft is not None
+        assert draft.current_version_number == 3
+
+
 def test_only_approved_version_can_be_exported(session, draft) -> None:
     with pytest.raises(InvalidQAState):
         export_qa(session, [draft.id], "csv")
@@ -188,6 +259,49 @@ def test_export_is_deterministic_utf8_csv_and_strict_json(
     assert csv_artifact.metadata == replay.metadata
     assert csv_artifact.content == replay.content
     assert document.items[0].answer == "初始答案"
+
+
+def test_every_export_invocation_records_actor_without_mutating_artifact_provenance(
+    session, draft, business_evidence
+) -> None:
+    approve_qa(
+        session,
+        draft.id,
+        actor="operator-1",
+        edits={"business_evidence": [business_evidence]},
+    )
+
+    first = export_qa(session, [draft.id], "csv", actor="operator-1")
+    provenance = (
+        first.record.created_by,
+        first.record.artifact_path,
+        first.record.artifact_hash,
+        first.record.created_at,
+    )
+    replay = export_qa(session, [draft.id], "csv", actor="operator-2")
+
+    assert replay.record.id == first.record.id
+    assert (
+        replay.record.created_by,
+        replay.record.artifact_path,
+        replay.record.artifact_hash,
+        replay.record.created_at,
+    ) == provenance
+    assert session.scalars(
+        select(ExportRecord).where(
+            ExportRecord.format == first.record.format,
+            ExportRecord.artifact_hash == first.record.artifact_hash,
+        )
+    ).all() == [first.record]
+    events = session.scalars(
+        select(AuditEvent)
+        .where(
+            AuditEvent.action == "qa_exported",
+            AuditEvent.entity_id == first.record.id,
+        )
+        .order_by(AuditEvent.created_at, AuditEvent.id)
+    ).all()
+    assert [item.actor for item in events] == ["operator-1", "operator-2"]
 
 
 def test_0003_downgrade_preserves_indexes_required_by_foreign_keys(monkeypatch) -> None:
@@ -232,12 +346,19 @@ def test_0003_upgrade_removes_downgrade_only_indexes(monkeypatch) -> None:
 
     monkeypatch.setattr(migration, "op", RecordingOperations())
     monkeypatch.setattr(
+        migration,
+        "_deduplicate_legacy_rows",
+        lambda: calls.append(("preflight", "legacy_rows")),
+        raising=False,
+    )
+    monkeypatch.setattr(
         migration, "_index_exists", lambda table_name, index_name: True, raising=False
     )
 
     migration.upgrade()
 
     assert calls == [
+        ("preflight", "legacy_rows"),
         ("create_unique_constraint", "uq_task_cluster_type"),
         ("create_unique_constraint", "uq_qa_draft_task"),
         ("create_unique_constraint", "uq_export_record_format_hash"),
