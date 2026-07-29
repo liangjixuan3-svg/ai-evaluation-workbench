@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
+import app.evaluation.router as evaluation_router
 import app.evaluation.service as evaluation_service
 from app.db import get_session
 from app.evaluation.contracts import EvaluationRequest, ProviderEvaluation
@@ -25,7 +26,7 @@ from app.evaluation.models import (
     PromptVersion,
     RuleVersion,
 )
-from app.evaluation.providers import EvaluationProvider
+from app.evaluation.providers import EvaluationProvider, ProviderIdentity
 from app.evaluation.service import run_evaluation_batch
 from app.ingestion.models import (
     Conversation,
@@ -67,9 +68,20 @@ def session(engine) -> Iterator[Session]:
 
 
 class FlakyTransport:
-    def __init__(self, failures: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        failures: set[str] | None = None,
+        identity: ProviderIdentity | None = None,
+    ) -> None:
         self.failures = failures or set()
         self.requests: list[EvaluationRequest] = []
+        self._identity = identity or ProviderIdentity(
+            provider="public-test-provider", model="model-v9"
+        )
+
+    @property
+    def identity(self) -> ProviderIdentity:
+        return self._identity
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
         self.requests.append(request)
@@ -90,13 +102,8 @@ class FlakyTransport:
         )
 
 
-def _provider(
-    transport: FlakyTransport,
-    *,
-    provider: str = "public-test-provider",
-    model: str = "model-v9",
-) -> EvaluationProvider:
-    return EvaluationProvider(transport, provider=provider, model=model)
+def _provider(transport: FlakyTransport) -> EvaluationProvider:
+    return EvaluationProvider(transport)
 
 
 def _run_with_sample(session: Session, count: int = 3) -> tuple[EvaluationRun, list[Conversation]]:
@@ -489,6 +496,25 @@ def test_result_lineage_is_persisted_on_its_versioned_run(session: Session) -> N
     assert call.model == "model-v9"
 
 
+def test_persisted_lineage_uses_transport_declared_identity(session: Session) -> None:
+    run, _ = _run_with_sample(session, count=1)
+    identity = ProviderIdentity(provider="transport-provider", model="transport-model")
+    transport = FlakyTransport(identity=identity)
+    run.provider = identity.provider
+    run.model = identity.model
+    session.commit()
+
+    summary = run_evaluation_batch(session, run.id, EvaluationProvider(transport))
+    call = session.scalar(
+        select(ModelCallRecord).where(ModelCallRecord.evaluation_run_id == run.id)
+    )
+
+    assert summary.succeeded == 1
+    assert call is not None
+    assert call.provider == transport.identity.provider
+    assert call.model == transport.identity.model
+
+
 @pytest.mark.parametrize(
     ("provider_name", "model_name"),
     [("other-provider", "model-v9"), ("public-test-provider", "other-model")],
@@ -497,14 +523,10 @@ def test_batch_rejects_provider_identity_mismatch_before_model_call(
     session: Session, provider_name: str, model_name: str
 ) -> None:
     run, _ = _run_with_sample(session, count=1)
-    transport = FlakyTransport()
+    transport = FlakyTransport(identity=ProviderIdentity(provider=provider_name, model=model_name))
 
     with pytest.raises(ValueError, match="provider identity"):
-        run_evaluation_batch(
-            session,
-            run.id,
-            _provider(transport, provider=provider_name, model=model_name),
-        )
+        run_evaluation_batch(session, run.id, _provider(transport))
 
     assert transport.requests == []
 
@@ -532,9 +554,11 @@ def test_provider_call_runs_outside_database_transaction(session: Session) -> No
 
 def test_create_run_api_persists_versions_and_enqueues_the_batch(session: Session) -> None:
     existing_run, _ = _run_with_sample(session, count=1)
+    provider = _provider(FlakyTransport())
 
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[evaluation_router.get_evaluation_provider] = lambda: provider
 
     async def create_run() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -546,8 +570,6 @@ def test_create_run_api_persists_versions_and_enqueues_the_batch(session: Sessio
                     "template_id": existing_run.template_id,
                     "prompt_version_id": existing_run.prompt_version_id,
                     "rule_version_id": existing_run.rule_version_id,
-                    "provider": "public-test-provider",
-                    "model": "model-v9",
                     "model_parameters": {"temperature": 0},
                 },
             )
@@ -570,3 +592,31 @@ def test_create_run_api_persists_versions_and_enqueues_the_batch(session: Sessio
     assert run.rule_version_id == existing_run.rule_version_id
     assert job is not None
     assert job.kind == "evaluation_batch"
+
+
+def test_create_run_api_rejects_caller_provider_identity_labels(session: Session) -> None:
+    existing_run, _ = _run_with_sample(session, count=1)
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+
+    async def create_run() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/evaluation/runs",
+                json={
+                    "sampling_batch_id": existing_run.sampling_batch_id,
+                    "template_id": existing_run.template_id,
+                    "prompt_version_id": existing_run.prompt_version_id,
+                    "rule_version_id": existing_run.rule_version_id,
+                    "provider": "caller-provider",
+                    "model": "caller-model",
+                },
+            )
+
+    try:
+        response = asyncio.run(create_run())
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422

@@ -20,6 +20,9 @@ from app.shared.enums import RootCause
 class _EvaluationTransport(Protocol):
     """Internal raw transport contract implemented by provider adapters."""
 
+    @property
+    def identity(self) -> ProviderIdentity: ...
+
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation: ...
 
     def attribute(self, request: AttributionRequest) -> ProviderAttribution: ...
@@ -84,9 +87,12 @@ def parse_qa_draft_response(
 class EvaluationProvider:
     """Public provider boundary that validates every delegated result against its request."""
 
-    def __init__(self, transport: _EvaluationTransport, *, provider: str, model: str) -> None:
+    def __init__(self, transport: _EvaluationTransport) -> None:
+        identity = transport.identity
+        if not isinstance(identity, ProviderIdentity):
+            raise TypeError("transport identity must be a ProviderIdentity")
         self._transport = transport
-        self._identity = ProviderIdentity(provider=provider, model=model)
+        self._identity = identity
 
     @property
     def identity(self) -> ProviderIdentity:
@@ -122,6 +128,8 @@ class EvaluationProvider:
 
 class _FakeEvaluationTransport:
     """Internal deterministic transport used by the public fake provider."""
+
+    identity = ProviderIdentity(provider="fake", model="deterministic-v1")
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
         evidence = self._first_evidence(request.conversation.messages)
@@ -175,4 +183,4 @@ class FakeEvaluationProvider(EvaluationProvider):
     """Deterministic development provider with the same validation boundary as real adapters."""
 
     def __init__(self) -> None:
-        super().__init__(_FakeEvaluationTransport(), provider="fake", model="deterministic-v1")
+        super().__init__(_FakeEvaluationTransport())

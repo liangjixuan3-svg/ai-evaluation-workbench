@@ -18,6 +18,7 @@ from app.evaluation.contracts import (
 from app.evaluation.providers import (
     EvaluationProvider,
     FakeEvaluationProvider,
+    ProviderIdentity,
     ProviderResponseFormatError,
     parse_attribution_response,
     parse_evaluation_response,
@@ -210,6 +211,8 @@ def test_public_provider_boundary_rejects_fabricated_evidence_for_all_operations
     from app.shared.enums import RootCause
 
     class FabricatedEvidenceProvider:
+        identity = ProviderIdentity(provider="fabricated-test", model="fabricated-v1")
+
         def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
             return ProviderEvaluation(
                 dimensions={
@@ -247,9 +250,7 @@ def test_public_provider_boundary_rejects_fabricated_evidence_for_all_operations
                 confidence=1.0,
             )
 
-    provider = EvaluationProvider(
-        FabricatedEvidenceProvider(), provider="fabricated-test", model="fabricated-v1"
-    )
+    provider = EvaluationProvider(FabricatedEvidenceProvider())
     valid_evaluation = ProviderEvaluation(
         dimensions={
             "correctness": 100,
@@ -327,3 +328,15 @@ def test_fake_provider_exposes_immutable_identity() -> None:
     assert provider.identity.model == "deterministic-v1"
     with pytest.raises(FrozenInstanceError):
         provider.identity.provider = "caller-overwrite"
+
+
+def test_caller_cannot_relabel_transport_identity() -> None:
+    class DeclaredTransport:
+        identity = ProviderIdentity(provider="transport-provider", model="transport-model")
+
+    with pytest.raises(TypeError):
+        EvaluationProvider(
+            DeclaredTransport(),
+            provider="caller-provider",
+            model="caller-model",
+        )

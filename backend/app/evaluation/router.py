@@ -13,11 +13,16 @@ from app.evaluation.models import (
     PromptVersion,
     RuleVersion,
 )
+from app.evaluation.providers import EvaluationProvider, FakeEvaluationProvider
 from app.ingestion.models import SamplingBatch
 from app.jobs.repository import enqueue_job
 from app.shared.audit import record_audit
 
 router = APIRouter(prefix="/api/evaluation", tags=["evaluation"])
+
+
+def get_evaluation_provider() -> EvaluationProvider:
+    return FakeEvaluationProvider()
 
 
 class CreateEvaluationRunRequest(BaseModel):
@@ -27,8 +32,6 @@ class CreateEvaluationRunRequest(BaseModel):
     template_id: str
     prompt_version_id: str
     rule_version_id: str
-    provider: str = Field(min_length=1, max_length=64)
-    model: str = Field(min_length=1, max_length=128)
     model_parameters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -45,6 +48,7 @@ class EvaluationRunResponse(BaseModel):
 def create_evaluation_run(
     request: CreateEvaluationRunRequest,
     session: Annotated[Session, Depends(get_session)],
+    provider: Annotated[EvaluationProvider, Depends(get_evaluation_provider)],
 ) -> EvaluationRunResponse:
     required_records = (
         (SamplingBatch, request.sampling_batch_id, "sampling batch"),
@@ -57,13 +61,14 @@ def create_evaluation_run(
             session.rollback()
             raise HTTPException(status_code=404, detail=f"{label} not found")
 
+    identity = provider.identity
     run = EvaluationRun(
         sampling_batch_id=request.sampling_batch_id,
         template_id=request.template_id,
         prompt_version_id=request.prompt_version_id,
         rule_version_id=request.rule_version_id,
-        provider=request.provider,
-        model=request.model,
+        provider=identity.provider,
+        model=identity.model,
         model_parameters=request.model_parameters,
     )
     session.add(run)
@@ -75,8 +80,8 @@ def create_evaluation_run(
         entity_type="evaluation_run",
         entity_id=run.id,
         payload={
-            "provider": request.provider,
-            "model": request.model,
+            "provider": identity.provider,
+            "model": identity.model,
             "template_id": request.template_id,
             "prompt_version_id": request.prompt_version_id,
             "rule_version_id": request.rule_version_id,
