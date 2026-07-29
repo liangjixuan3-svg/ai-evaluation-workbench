@@ -305,7 +305,16 @@ def test_0002_backfills_legacy_replay_keys_and_enforces_them() -> None:
             assert "grouping_key" not in {
                 column["name"] for column in inspect(engine).get_columns("badcase_clusters")
             }
+            downgraded_indexes = {
+                index["name"]: index["column_names"]
+                for index in inspect(engine).get_indexes("root_cause_suggestions")
+            }
+            assert downgraded_indexes["ix_root_suggestion_cluster_id"] == ["cluster_id"]
             command.upgrade(config, "head")
+            engine.dispose()
+            assert "ix_root_suggestion_cluster_id" not in {
+                index["name"] for index in inspect(engine).get_indexes("root_cause_suggestions")
+            }
         finally:
             engine.dispose()
             settings.database_url = original_url

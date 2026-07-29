@@ -20,6 +20,8 @@ down_revision: str | Sequence[str] | None = "0001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_ROOT_SUGGESTION_CLUSTER_INDEX = "ix_root_suggestion_cluster_id"
+
 
 def upgrade() -> None:
     op.add_column(
@@ -73,6 +75,8 @@ def upgrade() -> None:
         "root_cause_suggestions",
         ["cluster_id", "provider", "model", "evaluation_result_id"],
     )
+    if _index_exists("root_cause_suggestions", _ROOT_SUGGESTION_CLUSTER_INDEX):
+        op.drop_index(_ROOT_SUGGESTION_CLUSTER_INDEX, table_name="root_cause_suggestions")
     op.create_table(
         "alert_signal_receipts",
         sa.Column("fingerprint", sa.String(length=64), nullable=False),
@@ -216,8 +220,21 @@ def _grouping_key(scenario: str | None, weakest_dimension: str, normalized_reaso
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _index_exists(table_name: str, index_name: str) -> bool:
+    return any(
+        index["name"] == index_name for index in sa.inspect(op.get_bind()).get_indexes(table_name)
+    )
+
+
 def downgrade() -> None:
     op.drop_table("alert_signal_receipts")
+    if not _index_exists("root_cause_suggestions", _ROOT_SUGGESTION_CLUSTER_INDEX):
+        op.create_index(
+            _ROOT_SUGGESTION_CLUSTER_INDEX,
+            "root_cause_suggestions",
+            ["cluster_id"],
+            unique=False,
+        )
     op.drop_constraint("fk_root_suggestion_result", "root_cause_suggestions", type_="foreignkey")
     op.drop_constraint("uq_root_suggestion_replay", "root_cause_suggestions", type_="unique")
     op.drop_column("root_cause_suggestions", "model")
