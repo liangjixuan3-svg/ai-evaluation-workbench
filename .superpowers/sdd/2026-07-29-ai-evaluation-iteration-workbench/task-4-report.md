@@ -235,3 +235,88 @@ Observed results: `All checks passed!` and `31 files already formatted`.
 ### Concerns
 
 None. Task 5 remains unstarted.
+
+## Fix Round 2
+
+### Implementation
+
+- Replaced the public `EvaluationProvider` Protocol with the concrete validated
+  boundary. Its `evaluate`, `attribute`, and `draft_qa` methods always validate
+  the delegated return type and transcript evidence before returning it.
+- Moved adapter behavior behind the module-private `_EvaluationTransport`
+  Protocol. Real adapters implement raw operations only and are passed to the
+  public boundary; no exported raw provider callable remains.
+- Reworked `FakeEvaluationProvider` to inherit the public boundary and delegate
+  to private `_FakeEvaluationTransport`, so development uses exactly the same
+  provenance checks as real adapters.
+
+### RED Evidence
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/contract/test_provider_contract.py::test_public_provider_boundary_rejects_fabricated_evidence_for_all_operations -v
+```
+
+Observed result: `1 failed in 0.08s`. The test attempted to construct the public
+`EvaluationProvider` with a custom raw adapter that returns structurally valid
+fabricated evidence for all three operations; it failed with
+`TypeError: Protocols cannot be instantiated`, proving the public name was still
+the optional Protocol rather than the validation boundary.
+
+### GREEN And Verification
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest tests/contract/test_provider_contract.py tests/unit/test_scoring.py -v
+```
+
+Observed result: `29 passed in 0.24s`, including the public-boundary fabricated
+evidence test and the inherited fake-provider path.
+
+```sh
+cd backend
+TEST_DATABASE_URL='mysql+pymysql://workbench:workbench@127.0.0.1:3307/workbench_test?charset=utf8mb4' \
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m pytest -v
+```
+
+Observed result: `51 passed in 0.44s`.
+
+```sh
+cd backend
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m ruff check app alembic tests
+PYTHONPATH=/private/tmp/codex-ai-workbench-python-deps \
+/Users/liangjixuan/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
+-m ruff format --check app alembic tests
+```
+
+Observed results: `All checks passed!` and `31 files already formatted`.
+
+### Files Changed
+
+- `backend/app/evaluation/providers.py`
+- `backend/tests/contract/test_provider_contract.py`
+- `.superpowers/sdd/2026-07-29-ai-evaluation-iteration-workbench/task-4-report.md`
+
+### Self-Review
+
+- `EvaluationProvider` is now the only public provider invocation path and every
+  method validates evidence before returning a result.
+- The raw transport Protocol and fake transport class are private by name and are
+  only consumed by the public provider constructor; no prior
+  `ValidatedEvaluationProvider` export remains.
+- The custom raw-adapter test exercises the public constructor directly and proves
+  fabricated evidence is rejected for evaluation, attribution, and QA drafting.
+- All prior PII, strict QA content, scoring, JSON enum, and veto fixes remain
+  covered by the focused and full suites.
+
+### Concerns
+
+None. Task 5 remains unstarted.

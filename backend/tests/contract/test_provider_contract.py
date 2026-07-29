@@ -202,11 +202,10 @@ def test_provider_qa_draft_rejects_unknown_and_nested_content_fields(
         )
 
 
-def test_validated_provider_boundary_rejects_fabricated_evidence_for_all_operations(
+def test_public_provider_boundary_rejects_fabricated_evidence_for_all_operations(
     evaluation_request: EvaluationRequest,
 ) -> None:
     from app.evaluation.contracts import ProviderAttribution, ProviderQADraft
-    from app.evaluation.providers import ValidatedEvaluationProvider
     from app.shared.enums import RootCause
 
     class FabricatedEvidenceProvider:
@@ -247,7 +246,7 @@ def test_validated_provider_boundary_rejects_fabricated_evidence_for_all_operati
                 confidence=1.0,
             )
 
-    provider = ValidatedEvaluationProvider(FabricatedEvidenceProvider())
+    provider = EvaluationProvider(FabricatedEvidenceProvider())
     valid_evaluation = ProviderEvaluation(
         dimensions={
             "correctness": 100,

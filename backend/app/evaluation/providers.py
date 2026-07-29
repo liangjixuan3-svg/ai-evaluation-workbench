@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from app.evaluation.contracts import (
     AttributionRequest,
@@ -16,9 +16,8 @@ from app.evaluation.contracts import (
 from app.shared.enums import RootCause
 
 
-@runtime_checkable
-class EvaluationProvider(Protocol):
-    """Unvalidated provider implementation contract for transport adapters."""
+class _EvaluationTransport(Protocol):
+    """Internal raw transport contract implemented by provider adapters."""
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation: ...
 
@@ -69,24 +68,24 @@ def parse_qa_draft_response(
     return result
 
 
-class ValidatedEvaluationProvider:
+class EvaluationProvider:
     """Public provider boundary that validates every delegated result against its request."""
 
-    def __init__(self, provider: EvaluationProvider) -> None:
-        self._provider = provider
+    def __init__(self, transport: _EvaluationTransport) -> None:
+        self._transport = transport
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
-        result = self._provider.evaluate(request)
+        result = self._transport.evaluate(request)
         self._validate_result(result, ProviderEvaluation, request.conversation)
         return result
 
     def attribute(self, request: AttributionRequest) -> ProviderAttribution:
-        result = self._provider.attribute(request)
+        result = self._transport.attribute(request)
         self._validate_result(result, ProviderAttribution, request.conversation)
         return result
 
     def draft_qa(self, request: QADraftRequest) -> ProviderQADraft:
-        result = self._provider.draft_qa(request)
+        result = self._transport.draft_qa(request)
         self._validate_result(result, ProviderQADraft, request.conversation)
         return result
 
@@ -103,8 +102,8 @@ class ValidatedEvaluationProvider:
         validate_evidence_in_transcript(result, conversation)
 
 
-class FakeEvaluationProvider:
-    """Deterministic development provider that never receives unredacted source data."""
+class _FakeEvaluationTransport:
+    """Internal deterministic transport used by the public fake provider."""
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
         evidence = self._first_evidence(request.conversation.messages)
@@ -152,3 +151,10 @@ class FakeEvaluationProvider:
     @staticmethod
     def _first_evidence(messages: tuple[Any, ...]) -> str:
         return next(message.content.strip() for message in messages if message.content.strip())
+
+
+class FakeEvaluationProvider(EvaluationProvider):
+    """Deterministic development provider with the same validation boundary as real adapters."""
+
+    def __init__(self) -> None:
+        super().__init__(_FakeEvaluationTransport())
