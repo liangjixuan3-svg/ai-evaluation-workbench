@@ -1,5 +1,6 @@
 .worktrees/
 backend/.pytest_cache/
+backend/.venv/
 backend/*.egg-info/
 backend/**/__pycache__/
 frontend/dist/
