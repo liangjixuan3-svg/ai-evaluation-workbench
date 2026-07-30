@@ -30,10 +30,6 @@ class AlertCard(BaseModel):
     impact_count: int
 
 
-class WorkbenchResponse(BaseModel):
-    alerts: list[AlertCard]
-
-
 class AttributionSuggestionResponse(BaseModel):
     root_cause: str
     reason: str
@@ -44,20 +40,6 @@ class AttributionSuggestionResponse(BaseModel):
 class AlertDetailResponse(AlertCard):
     result_ids: list[str]
     root_cause_suggestion: AttributionSuggestionResponse | None
-
-
-@router.get("/api/workbench", response_model=WorkbenchResponse)
-def get_workbench(
-    session: Annotated[Session, Depends(get_session)],
-) -> WorkbenchResponse:
-    alerts = list(
-        session.scalars(
-            select(Alert).order_by(
-                Alert.priority, Alert.impact_count.desc(), Alert.created_at.desc()
-            )
-        )
-    )
-    return WorkbenchResponse(alerts=[_alert_card(alert) for alert in alerts])
 
 
 @router.get("/api/alerts/{alert_id}", response_model=AlertDetailResponse)
