@@ -78,3 +78,33 @@ def test_provider_error_never_contains_api_key() -> None:
         transport.evaluate(_request())
 
     assert api_key not in str(error.value)
+
+
+def test_transport_normalizes_common_percentage_and_scalar_evidence_response() -> None:
+    content = {
+        "dimensions": {
+            "correctness": 90,
+            "completeness": 80,
+            "relevance": 85,
+            "service_experience": 75,
+            "compliance": 100,
+        },
+        "reason": "回答基本正确",
+        "evidence": "手机号 [PHONE]",
+        "confidence": 100,
+        "severe_factual_error": False,
+        "severe_compliance_error": False,
+    }
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps(content)}}]},
+            )
+        )
+    )
+
+    result = OpenAICompatibleTransport(_settings(), client).evaluate(_request())
+
+    assert result.evidence == ["手机号 [PHONE]"]
+    assert result.confidence == 1.0
