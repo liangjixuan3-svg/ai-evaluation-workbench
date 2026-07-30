@@ -1,6 +1,8 @@
 .worktrees/
+.DS_Store
 backend/.pytest_cache/
 backend/.venv/
+backend/.env
 backend/*.egg-info/
 backend/**/__pycache__/
 frontend/dist/
