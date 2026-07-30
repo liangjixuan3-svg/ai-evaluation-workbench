@@ -16,7 +16,11 @@ class IngestionSummary:
 
 
 def ingest_conversations(
-    session: Session, source_id: str, items: list[ConversationInput]
+    session: Session,
+    source_id: str,
+    items: list[ConversationInput],
+    *,
+    commit: bool = True,
 ) -> IngestionSummary:
     inserted = 0
     skipped = 0
@@ -40,7 +44,10 @@ def ingest_conversations(
             )
             seen_external_ids.add(item.external_id)
             inserted += 1
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except Exception:
         session.rollback()
         raise

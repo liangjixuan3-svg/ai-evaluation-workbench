@@ -77,6 +77,13 @@ def suggest_mapping(records: tuple[dict[str, object], ...]) -> ImportMapping:
     )
 
 
+def read_record_array(document: Any, path: str) -> list[Any]:
+    records = _read_path(document, path)
+    if not isinstance(records, list):
+        raise TypeError("映射的记录路径不是数组")
+    return records
+
+
 def normalize_records(
     document: Any,
     mapping: ImportMapping,
@@ -147,7 +154,9 @@ def _normalize_record(
     external_value = _optional(raw_record, mapping.id_path)
     external_id = str(external_value).strip() if external_value is not None else ""
     if not external_id:
-        canonical = json.dumps(raw_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        canonical = json.dumps(
+            raw_record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         external_id = f"json-{sha256(canonical.encode()).hexdigest()}"
     if len(external_id) > 255:
         raise ValueError("外部对话 ID 不能超过 255 个字符")
@@ -267,4 +276,6 @@ def _first_list_key(record: dict[str, Any], names: tuple[str, ...]) -> str | Non
 
 
 def _failed(message: str) -> NormalizationResult:
-    return NormalizationResult(items=(), errors=(NormalizationError(row_index=-1, message=message),))
+    return NormalizationResult(
+        items=(), errors=(NormalizationError(row_index=-1, message=message),)
+    )
