@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     )
     model_provider: str = "fake"
     model_api_key: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

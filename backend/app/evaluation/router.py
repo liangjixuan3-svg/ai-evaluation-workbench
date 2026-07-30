@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_session
 from app.evaluation.models import (
     EvaluationRun,
@@ -13,7 +14,8 @@ from app.evaluation.models import (
     PromptVersion,
     RuleVersion,
 )
-from app.evaluation.providers import EvaluationProvider, FakeEvaluationProvider
+from app.evaluation.openai_compatible import build_evaluation_provider, provider_is_configured
+from app.evaluation.providers import EvaluationProvider
 from app.ingestion.models import SamplingBatch
 from app.jobs.repository import enqueue_job
 from app.shared.audit import record_audit
@@ -22,7 +24,16 @@ router = APIRouter(prefix="/api/evaluation", tags=["evaluation"])
 
 
 def get_evaluation_provider() -> EvaluationProvider:
-    return FakeEvaluationProvider()
+    return build_evaluation_provider(settings)
+
+
+@router.get("/provider-status")
+def get_provider_status() -> dict[str, str | bool | None]:
+    return {
+        "configured": provider_is_configured(settings),
+        "base_url": settings.llm_base_url or None,
+        "model": settings.llm_model or None,
+    }
 
 
 class CreateEvaluationRunRequest(BaseModel):
