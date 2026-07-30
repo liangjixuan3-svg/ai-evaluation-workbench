@@ -50,6 +50,7 @@ EXPECTED_TABLES = {
     "evaluation_runs",
     "evaluation_templates",
     "export_records",
+    "import_sessions",
     "jobs",
     "model_call_records",
     "prompt_versions",

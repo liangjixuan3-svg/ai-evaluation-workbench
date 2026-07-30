@@ -1,6 +1,9 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import { AppShell } from "../components/AppShell";
+import { NewEvaluationPage } from "../features/evaluations/NewEvaluationPage";
+import { RunDetailPage } from "../features/evaluations/RunDetailPage";
+import { ImportPage } from "../features/imports/ImportPage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
 
 function ComingSoon({ title }: { title: string }) {
@@ -22,7 +25,10 @@ export function AppRouter() {
         <Route path="alerts/*" element={<ComingSoon title="问题与归因" />} />
         <Route path="qa/*" element={<ComingSoon title="QA 审核" />} />
         <Route path="retests/*" element={<ComingSoon title="发布与复测" />} />
-        <Route path="runs/*" element={<ComingSoon title="评测运行" />} />
+        <Route path="runs/import" element={<ImportPage />} />
+        <Route path="runs/new" element={<NewEvaluationPage />} />
+        <Route path="runs/:runId" element={<RunDetailPage />} />
+        <Route path="runs" element={<Navigate to="/runs/new" replace />} />
         <Route path="rules/*" element={<ComingSoon title="评测规则" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

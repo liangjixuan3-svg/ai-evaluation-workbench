@@ -5,8 +5,9 @@ const navigation = [
   ["/alerts", "问题与归因", "02"],
   ["/qa", "QA 审核", "03"],
   ["/retests", "发布与复测", "04"],
-  ["/runs", "评测运行", "05"],
-  ["/rules", "评测规则", "06"],
+  ["/runs/import", "数据采集", "05"],
+  ["/runs/new", "发起评测", "06"],
+  ["/rules", "评测规则", "07"],
 ] as const;
 
 export function AppShell() {
@@ -19,20 +20,20 @@ export function AppShell() {
         </a>
         <nav aria-label="主导航">
           {navigation.map(([path, label, index]) => (
-            <NavLink key={path} to={path} end={path === "/"}>
+            <NavLink key={path} to={path} end>
               <span>{index}</span>{label}
             </NavLink>
           ))}
         </nav>
         <div className="sidebar-foot">
           <span className="pulse" />
-          <div><strong>自动评测运行中</strong><small>下一批次 14:00</small></div>
+          <div><strong>真实数据模式</strong><small>手动发起评测</small></div>
         </div>
       </aside>
       <main className="main-stage">
         <header className="topbar">
           <div className="mobile-brand"><span className="brand-mark">迭</span> 迭代台</div>
-          <div className="system-state"><span className="pulse" /> 今日已评测 2,238 条</div>
+          <div className="system-state"><span className="pulse" /> 评测工作台已就绪</div>
           <button className="operator" type="button"><span>林</span> 林乔</button>
         </header>
         <Outlet />
