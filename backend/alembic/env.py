@@ -9,6 +9,7 @@ from app.config import settings
 from app.db import Base
 from app.evaluation import models as evaluation_models
 from app.ingestion import models as ingestion_models
+from app.imports import models as import_models
 from app.jobs import models as job_models
 from app.remediation import models as remediation_models
 from app.retest import models as retest_models
@@ -20,6 +21,7 @@ MODEL_MODULES = (
     audit,
     evaluation_models,
     ingestion_models,
+    import_models,
     job_models,
     remediation_models,
     retest_models,
