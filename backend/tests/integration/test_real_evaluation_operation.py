@@ -5,18 +5,45 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
-from app.evaluation.providers import FakeEvaluationProvider
+from app.evaluation.contracts import EvaluationRequest, ProviderEvaluation
+from app.evaluation.providers import EvaluationProvider, ProviderIdentity
 from app.imports.models import ImportSession
 from app.ingestion.models import Conversation, DataSource
+from app.jobs.models import Job
 from app.main import create_app
 from app.operations.router import get_operation_provider
 from app.operations.worker import process_next_job
 from app.shared.types import utc_now
+
+
+class TransientEvaluationTransport:
+    identity = ProviderIdentity(provider="test", model="transient-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary provider outage")
+        evidence = request.conversation.messages[0].content
+        return ProviderEvaluation(
+            dimensions={
+                "correctness": 90,
+                "completeness": 90,
+                "relevance": 90,
+                "service_experience": 90,
+                "compliance": 90,
+            },
+            reason="The answer meets the configured quality bar.",
+            evidence=[evidence],
+            confidence=0.9,
+        )
 
 
 def test_create_operation_runs_and_returns_real_results() -> None:
@@ -62,9 +89,10 @@ def test_create_operation_runs_and_returns_real_results() -> None:
     )
     session.add(imported)
     session.commit()
+    provider = EvaluationProvider(TransientEvaluationTransport())
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session
-    app.dependency_overrides[get_operation_provider] = FakeEvaluationProvider
+    app.dependency_overrides[get_operation_provider] = lambda: provider
 
     async def exercise() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
@@ -79,7 +107,11 @@ def test_create_operation_runs_and_returns_real_results() -> None:
                     "seed": 20260730,
                 },
             )
-            process_next_job(session, FakeEvaluationProvider())
+            process_next_job(session, provider)
+            for job in session.scalars(select(Job).where(Job.status == "queued")):
+                job.run_after = utc_now()
+            session.commit()
+            process_next_job(session, provider)
             detail = await client.get(
                 f"/api/operations/evaluations/{created.json()['run_id']}"
             )

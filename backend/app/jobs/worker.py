@@ -25,8 +25,9 @@ def run_worker_once(
     worker_id: str,
     handler: Callable[[Job], None],
     limit: int = 1,
+    kinds: frozenset[str] | None = None,
 ) -> WorkerSummary:
-    jobs = claim_jobs(session, worker_id, limit)
+    jobs = claim_jobs(session, worker_id, limit, kinds)
     succeeded = 0
     failed = 0
     manual_review = 0
@@ -55,12 +56,13 @@ def run_worker_once(
             job = session.get(Job, claimed_job.id)
             if job is None:
                 raise RuntimeError(f"claimed job {claimed_job.id} no longer exists")
-            job.status = JobStatus.SUCCEEDED
-            job.claimed_by = None
-            job.claimed_at = None
-            job.last_error = None
+            if job.status == JobStatus.CLAIMED:
+                job.status = JobStatus.SUCCEEDED
+                job.claimed_by = None
+                job.claimed_at = None
+                job.last_error = None
+                succeeded += 1
             session.commit()
-            succeeded += 1
 
     return WorkerSummary(
         claimed=len(jobs),

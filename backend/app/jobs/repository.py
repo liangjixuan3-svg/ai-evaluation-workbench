@@ -52,14 +52,21 @@ def enqueue_job(
     return job
 
 
-def claim_jobs(session: Session, worker_id: str, limit: int) -> list[Job]:
+def claim_jobs(
+    session: Session,
+    worker_id: str,
+    limit: int,
+    kinds: frozenset[str] | None = None,
+) -> list[Job]:
     if limit < 1:
         return []
 
+    query = select(Job).where(Job.status == JobStatus.QUEUED, Job.run_after <= utc_now())
+    if kinds:
+        query = query.where(Job.kind.in_(kinds))
     jobs = list(
         session.scalars(
-            select(Job)
-            .where(Job.status == JobStatus.QUEUED, Job.run_after <= utc_now())
+            query
             .order_by(Job.created_at, Job.id)
             .with_for_update(skip_locked=True)
             .limit(limit)

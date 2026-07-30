@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import time
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -13,6 +14,7 @@ from app.evaluation.service import run_evaluation_batch
 from app.jobs.models import Job
 from app.jobs.worker import run_worker_once
 from app.operations.service import postprocess_evaluation
+from app.shared.enums import JobStatus
 
 
 def process_next_job(session: Session, provider: EvaluationProvider) -> bool:
@@ -21,9 +23,31 @@ def process_next_job(session: Session, provider: EvaluationProvider) -> bool:
             raise ValueError(f"unsupported job kind: {job.kind}")
         run_id = str(job.payload["run_id"])
         run_evaluation_batch(session, run_id, provider)
-        postprocess_evaluation(session, run_id)
+        next_retry = session.scalar(
+            select(func.min(Job.run_after)).where(
+                Job.idempotency_key.like(f"evaluation-item:{run_id}:%"),
+                Job.status == JobStatus.QUEUED,
+            )
+        )
+        if next_retry is not None:
+            parent = session.get(Job, job.id)
+            if parent is None:
+                raise LookupError("evaluation batch job no longer exists")
+            parent.status = JobStatus.QUEUED
+            parent.run_after = next_retry
+            parent.claimed_by = None
+            parent.claimed_at = None
+            session.commit()
+        else:
+            postprocess_evaluation(session, run_id)
 
-    summary = run_worker_once(session, "evaluation-worker", handler, limit=1)
+    summary = run_worker_once(
+        session,
+        "evaluation-worker",
+        handler,
+        limit=1,
+        kinds=frozenset({"evaluation_batch"}),
+    )
     return summary.claimed > 0
 
 
