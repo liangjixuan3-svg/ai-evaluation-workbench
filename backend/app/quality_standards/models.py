@@ -14,9 +14,10 @@ from sqlalchemy import (
     event,
     inspect,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
+from app.quality_standards.contracts import QualityStandardRules
 from app.shared.types import (
     MYSQL_TABLE_ARGS,
     ImmutableRecordError,
@@ -64,6 +65,10 @@ class QualityStandardVersion(Base):
 
     standard: Mapped[QualityStandard] = relationship(back_populates="versions")
 
+    @validates("rules")
+    def validate_rules(self, key: str, value: object) -> dict[str, Any]:
+        return _validated_rules(value)
+
 
 class QualityStandardParseJob(Base):
     __tablename__ = "quality_standard_parse_jobs"
@@ -86,6 +91,16 @@ class QualityStandardParseJob(Base):
     standard: Mapped[QualityStandard] = relationship(back_populates="parse_jobs")
 
 
+def _validated_rules(value: object) -> dict[str, Any]:
+    return QualityStandardRules.model_validate(value).model_dump(mode="json")
+
+
+def validate_version_rules_before_write(
+    mapper: object, connection: object, target: QualityStandardVersion
+) -> None:
+    target.rules = _validated_rules(target.rules)
+
+
 def reject_published_version_change(mapper: object, connection: object, target: object) -> None:
     published_at = inspect(target).attrs.published_at.history
     if any(value is not None for value in published_at.deleted):
@@ -99,5 +114,7 @@ def reject_published_version_delete(mapper: object, connection: object, target: 
         raise ImmutableRecordError("published quality standard versions are immutable")
 
 
+event.listen(QualityStandardVersion, "before_insert", validate_version_rules_before_write)
+event.listen(QualityStandardVersion, "before_update", validate_version_rules_before_write)
 event.listen(QualityStandardVersion, "before_update", reject_published_version_change)
 event.listen(QualityStandardVersion, "before_delete", reject_published_version_delete)

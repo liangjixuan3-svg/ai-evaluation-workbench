@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from math import isclose
+from math import isclose, isfinite
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -113,6 +113,25 @@ class QualityStandardRules(BaseModel):
         expected = {item.value for item in QualityDimension}
         if set(value["weights"]) != expected:
             raise ValueError("权重必须且只能包含五个固定维度")
+        return value
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def reject_non_numeric_or_boolean_weights(cls, value: object) -> object:
+        if isinstance(value, dict) and any(
+            isinstance(weight, bool) or not isinstance(weight, (int, float))
+            for weight in value.values()
+        ):
+            raise ValueError("权重必须是 0 到 1 之间的数字")
+        return value
+
+    @field_validator("weights")
+    @classmethod
+    def validate_weight_range(
+        cls, value: dict[QualityDimension, float]
+    ) -> dict[QualityDimension, float]:
+        if any(not isfinite(weight) or not 0 <= weight <= 1 for weight in value.values()):
+            raise ValueError("权重必须是 0 到 1 之间的数字")
         return value
 
     @model_validator(mode="after")

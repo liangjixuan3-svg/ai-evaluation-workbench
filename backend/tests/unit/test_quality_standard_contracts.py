@@ -80,6 +80,21 @@ def test_rejects_weights_that_do_not_sum_to_one() -> None:
         QualityStandardRules.model_validate(invalid)
 
 
+@pytest.mark.parametrize("invalid_weight", [-0.01, 1.01, True])
+def test_rejects_weight_outside_unit_interval_or_boolean(invalid_weight: object) -> None:
+    weights = {
+        "correctness": 0.30,
+        "completeness": 0.20,
+        "relevance": 0.20,
+        "service_experience": 0.15,
+        "compliance": 0.15,
+    }
+    weights["correctness"] = invalid_weight
+
+    with pytest.raises(ValidationError, match="权重必须是 0 到 1 之间的数字"):
+        QualityStandardRules.model_validate(_valid_rules(weights=weights))
+
+
 @pytest.mark.parametrize(
     "weights",
     [
@@ -116,7 +131,11 @@ def test_rejects_rule_without_source_traceability() -> None:
 def test_rejects_dimension_cap_outside_score_range(cap: int) -> None:
     with pytest.raises(ValidationError, match="维度上限必须在 0 到 100 之间"):
         QualityStandardRules.model_validate(
-            _valid_rules(common_rules=[_valid_rule(effect={"kind": "dimension_cap", "dimension_cap": cap})])
+            _valid_rules(
+                common_rules=[
+                    _valid_rule(effect={"kind": "dimension_cap", "dimension_cap": cap})
+                ]
+            )
         )
 
 

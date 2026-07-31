@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+from datetime import UTC, datetime
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import DBAPIError
 
 
 def test_quality_standard_schema_is_mysql_native() -> None:
@@ -31,11 +36,14 @@ def test_quality_standard_schema_is_mysql_native() -> None:
                 "updated_at",
             },
         }
-        assert expected_columns <= {
+        actual_columns = {
             table_name: {column["name"] for column in inspector.get_columns(table_name)}
             for table_name in expected_columns
             if table_name in inspector.get_table_names()
         }
+        assert set(actual_columns) == set(expected_columns)
+        for table_name, columns in expected_columns.items():
+            assert columns <= actual_columns[table_name]
 
         with engine.connect() as connection:
             tables = connection.execute(
@@ -81,6 +89,69 @@ def test_quality_standard_schema_is_mysql_native() -> None:
                 and item["referred_table"] == "quality_standards"
                 and item["constrained_columns"] == ["standard_id"]
                 for item in foreign_keys
+            )
+    finally:
+        engine.dispose()
+
+
+def test_published_version_triggers_block_bulk_update_and_delete() -> None:
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], pool_pre_ping=True)
+    standard_id = str(uuid4())
+    version_id = str(uuid4())
+    try:
+        with engine.connect() as connection:
+            triggers = connection.execute(
+                text(
+                    "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS "
+                    "WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = "
+                    "'quality_standard_versions'"
+                )
+            ).scalars()
+            assert set(triggers) >= {
+                "trg_quality_standard_versions_immutable_update",
+                "trg_quality_standard_versions_immutable_delete",
+            }
+
+        with engine.begin() as connection:
+            now = datetime.now(UTC)
+            connection.execute(
+                text(
+                    "INSERT INTO quality_standards "
+                    "(id, name, status, created_at, updated_at) "
+                    "VALUES (:id, :name, 'published', :now, :now)"
+                ),
+                {"id": standard_id, "name": f"trigger-test-{standard_id}", "now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO quality_standard_versions "
+                    "(id, standard_id, version_number, source_filename, source_sha256, "
+                    "source_path, rules, published_at) VALUES "
+                    "(:id, :standard_id, 1, 'standard.docx', :sha256, :path, :rules, :now)"
+                ),
+                {
+                    "id": version_id,
+                    "standard_id": standard_id,
+                    "sha256": "a" * 64,
+                    "path": "quality-standards/standard.docx",
+                    "rules": json.dumps({"validated": True}),
+                    "now": now,
+                },
+            )
+
+        with pytest.raises(DBAPIError, match="immutable"), engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE quality_standard_versions SET source_path = 'bypassed.docx' "
+                    "WHERE id = :id"
+                ),
+                {"id": version_id},
+            )
+
+        with pytest.raises(DBAPIError, match="immutable"), engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM quality_standard_versions WHERE id = :id"),
+                {"id": version_id},
             )
     finally:
         engine.dispose()

@@ -70,9 +70,41 @@ def upgrade() -> None:
         mysql_charset="utf8mb4",
         mysql_engine="InnoDB",
     )
+    op.execute(
+        sa.text(
+            """
+            CREATE TRIGGER trg_quality_standard_versions_immutable_update
+            BEFORE UPDATE ON quality_standard_versions
+            FOR EACH ROW
+            BEGIN
+                IF OLD.published_at IS NOT NULL THEN
+                    SIGNAL SQLSTATE '45000'
+                        SET MESSAGE_TEXT = 'published quality standard version is immutable';
+                END IF;
+            END
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
+            CREATE TRIGGER trg_quality_standard_versions_immutable_delete
+            BEFORE DELETE ON quality_standard_versions
+            FOR EACH ROW
+            BEGIN
+                IF OLD.published_at IS NOT NULL THEN
+                    SIGNAL SQLSTATE '45000'
+                        SET MESSAGE_TEXT = 'published quality standard version is immutable';
+                END IF;
+            END
+            """
+        )
+    )
 
 
 def downgrade() -> None:
+    op.execute(sa.text("DROP TRIGGER IF EXISTS trg_quality_standard_versions_immutable_update"))
+    op.execute(sa.text("DROP TRIGGER IF EXISTS trg_quality_standard_versions_immutable_delete"))
     op.drop_table("quality_standard_parse_jobs")
     op.drop_table("quality_standard_versions")
     op.drop_table("quality_standards")
