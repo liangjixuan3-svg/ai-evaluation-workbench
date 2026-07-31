@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from zipfile import ZipFile
 
 import pytest
 from docx import Document
@@ -14,6 +15,13 @@ def _docx_bytes(*paragraphs: str) -> bytes:
         document.add_paragraph(paragraph)
     output = BytesIO()
     document.save(output)
+    return output.getvalue()
+
+
+def _zip_bytes() -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        archive.writestr("README.txt", "not a Word document")
     return output.getvalue()
 
 
@@ -85,6 +93,11 @@ def test_extracts_pdf_pages_with_page_locators() -> None:
 def test_rejects_filename_that_does_not_match_document_content(filename: str, content: bytes) -> None:
     with pytest.raises(ValueError, match="文件扩展名与实际内容不匹配"):
         extract_document(filename, content)
+
+
+def test_rejects_valid_zip_that_is_not_a_docx_with_actionable_chinese_error() -> None:
+    with pytest.raises(ValueError, match="DOCX 文档无法读取，请确认文件未损坏后重新上传"):
+        extract_document("not-word.docx", _zip_bytes())
 
 
 def test_rejects_document_larger_than_twenty_megabytes() -> None:

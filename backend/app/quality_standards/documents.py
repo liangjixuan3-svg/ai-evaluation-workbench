@@ -65,7 +65,7 @@ def _ensure_pdf_content(content: bytes) -> None:
 def _extract_docx_sections(content: bytes) -> list[SourceSection]:
     try:
         document = Document(BytesIO(content))
-    except (PackageNotFoundError, ValueError) as error:
+    except (KeyError, PackageNotFoundError, ValueError) as error:
         raise ValueError("DOCX 文档无法读取，请确认文件未损坏后重新上传") from error
 
     return [
