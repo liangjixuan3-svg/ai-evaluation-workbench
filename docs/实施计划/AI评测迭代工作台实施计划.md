@@ -1,4 +1,4 @@
-# AI Evaluation Iteration Workbench Implementation Plan
+# AI 评测迭代工作台实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1017,4 +1017,4 @@ git commit -m "feat: complete AI quality operations loop"
 - [ ] Run `make demo` and record the alert ID, QA export ID, and recovered retest ID.
 - [ ] Run `cd frontend && npm run build` and record the generated asset summary.
 - [ ] If Docker is available, run `docker compose -f deploy/docker-compose.yml config` and `docker compose -f deploy/docker-compose.yml up --build`; verify `/api/health` and the default task workbench route.
-- [ ] Review the implementation against every acceptance criterion in `docs/superpowers/specs/2026-07-29-ai-evaluation-iteration-workbench-design.md` before claiming completion.
+- [ ] Review the implementation against every acceptance criterion in `docs/产品设计/AI评测迭代工作台.md` before claiming completion.
