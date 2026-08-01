@@ -70,3 +70,20 @@ def test_prompt_draft_save_publish_and_lock(client: TestClient) -> None:
     assert client.put(
         f"/api/evaluation-prompts/{draft['id']}", json={"content": "不能修改"}
     ).status_code == 409
+
+
+def test_prompt_draft_can_be_deleted_but_published_version_cannot(
+    client: TestClient,
+) -> None:
+    default = client.get("/api/evaluation-prompts").json()[0]
+    draft = client.post(
+        "/api/evaluation-prompts/drafts", json={"source_id": default["id"]}
+    ).json()
+
+    deleted = client.delete(f"/api/evaluation-prompts/{draft['id']}")
+
+    assert deleted.status_code == 204
+    assert [item["id"] for item in client.get("/api/evaluation-prompts").json()] == [
+        default["id"]
+    ]
+    assert client.delete(f"/api/evaluation-prompts/{default['id']}").status_code == 409

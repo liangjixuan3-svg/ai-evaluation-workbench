@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from app.evaluation_prompts.service import (
     PromptVersionConflict,
     PromptVersionError,
     create_prompt_draft,
+    delete_prompt_draft,
     list_prompt_versions,
     prompt_payload,
     publish_prompt_draft,
@@ -47,6 +48,14 @@ def save_prompt(
     return _handle(
         lambda: prompt_payload(update_prompt_draft(session, prompt_id, body.content))
     )
+
+
+@router.delete("/{prompt_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_prompt(
+    prompt_id: str, session: Annotated[Session, Depends(get_session)]
+) -> Response:
+    _handle(lambda: delete_prompt_draft(session, prompt_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{prompt_id}/publish")

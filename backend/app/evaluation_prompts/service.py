@@ -87,6 +87,14 @@ def update_prompt_draft(session: Session, prompt_id: str, content: str) -> Promp
     return prompt
 
 
+def delete_prompt_draft(session: Session, prompt_id: str) -> None:
+    prompt = _prompt(session, prompt_id)
+    if prompt.published_at is not None:
+        raise PromptVersionConflict("已发布 Prompt 不可删除")
+    session.delete(prompt)
+    session.commit()
+
+
 def publish_prompt_draft(session: Session, prompt_id: str) -> PromptVersion:
     prompt = _prompt(session, prompt_id)
     if prompt.published_at is not None:
