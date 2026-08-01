@@ -16,10 +16,12 @@ from app.quality_standards.service import (
     QualityStandardError,
     create_standard,
     delete_standard,
+    get_published_version,
     get_standard,
     list_standards,
     parse_standard_draft,
     publish_standard,
+    published_version_payload,
     standard_payload,
     update_standard_draft,
 )
@@ -74,6 +76,20 @@ def get_standards(session: Annotated[Session, Depends(get_session)]) -> list[dic
             "updated_at": item.updated_at.isoformat(),
         })
     return payload
+
+
+@router.get("/versions/{version_id}")
+def get_quality_standard_version(
+    version_id: str, session: Annotated[Session, Depends(get_session)]
+) -> dict[str, Any]:
+    try:
+        return published_version_payload(get_published_version(session, version_id))
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PublishedStandardError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="质量标准版本内容无效") from error
 
 
 @router.get("/{standard_id}")

@@ -167,6 +167,33 @@ def get_standard(session: Session, standard_id: str) -> QualityStandard:
     return standard
 
 
+def get_published_version(session: Session, version_id: str) -> QualityStandardVersion:
+    version = session.scalar(
+        select(QualityStandardVersion)
+        .where(QualityStandardVersion.id == version_id)
+        .options(selectinload(QualityStandardVersion.standard))
+    )
+    if version is None:
+        raise LookupError("质量标准版本不存在")
+    if version.published_at is None:
+        raise PublishedStandardError("该质量标准版本尚未发布")
+    QualityStandardRules.model_validate(version.rules)
+    return version
+
+
+def published_version_payload(version: QualityStandardVersion) -> dict[str, Any]:
+    rules = QualityStandardRules.model_validate(version.rules)
+    return {
+        "standard_id": version.standard_id,
+        "standard_name": version.standard.name,
+        "version_id": version.id,
+        "version_number": version.version_number,
+        "source_filename": version.source_filename,
+        "published_at": version.published_at.isoformat() if version.published_at else None,
+        "rules": rules.model_dump(mode="json"),
+    }
+
+
 def delete_standard(session: Session, storage_dir: Path, standard_id: str) -> None:
     standard = get_standard(session, standard_id)
     if standard.status == "published" or any(

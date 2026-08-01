@@ -156,7 +156,11 @@ def test_create_operation_runs_and_returns_real_results() -> None:
     assert created.status_code == 201
     assert detail.json()["stage"] == "completed"
     assert detail.json()["completed_count"] == 2
-    assert detail.json()["quality_standard"] == {"name": standard.name, "version": 1}
+    assert detail.json()["quality_standard"] == {
+        "name": standard.name,
+        "version": 1,
+        "version_id": standard_version.id,
+    }
     assert len(results.json()["items"]) == 2
     assert raw_provider.requests[-1].criteria["threshold"] == 80
     session.close()

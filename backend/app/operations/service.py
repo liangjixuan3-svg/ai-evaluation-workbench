@@ -234,6 +234,7 @@ def operation_detail(session: Session, run_id: str) -> dict[str, Any]:
             {
                 "name": run.quality_standard_version.standard.name,
                 "version": run.quality_standard_version.version_number,
+                "version_id": run.quality_standard_version.id,
             }
             if run.quality_standard_version is not None
             else None

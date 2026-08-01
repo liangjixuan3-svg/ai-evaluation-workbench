@@ -233,6 +233,13 @@ def test_parse_review_and_publish_standard(
     assert rules["threshold"] == 80
     assert rules["common_rules"][0]["confirmed"] is False
 
+    draft_detail = client.get(
+        f"/api/quality-standards/versions/{uploaded['draft']['id']}"
+    )
+    missing_detail = client.get("/api/quality-standards/versions/not-found")
+    assert draft_detail.status_code == 409
+    assert missing_detail.status_code == 404
+
     blocked = client.post(f"/api/quality-standards/{uploaded['id']}/publish")
     assert blocked.status_code == 422
     assert "未人工确认" in blocked.json()["detail"]
@@ -246,6 +253,19 @@ def test_parse_review_and_publish_standard(
     assert published.json()["status"] == "published"
     assert published.json()["draft"] is None
     assert published.json()["versions"][0]["published_at"] is not None
+    version_detail = client.get(
+        f"/api/quality-standards/versions/{uploaded['draft']['id']}"
+    )
+    assert version_detail.status_code == 200
+    assert version_detail.json() == {
+        "standard_id": uploaded["id"],
+        "standard_name": "客服规范",
+        "version_id": uploaded["draft"]["id"],
+        "version_number": 1,
+        "source_filename": "客服规范.docx",
+        "published_at": published.json()["versions"][0]["published_at"],
+        "rules": rules,
+    }
 
 
 def test_delete_published_standard_returns_conflict_and_preserves_file(

@@ -40,6 +40,16 @@ export interface QualityStandard {
   parse_jobs: Array<{ id: string; status: string; error_summary: string | null; attempts: number }>;
 }
 
+export interface PublishedQualityStandardVersion {
+  standard_id: string;
+  standard_name: string;
+  version_id: string;
+  version_number: number;
+  source_filename: string;
+  published_at: string;
+  rules: StandardRules;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { Accept: "application/json", ...init?.headers } });
   if (!response.ok) {
@@ -51,6 +61,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const listQualityStandards = () => request<QualityStandardSummary[]>("/api/quality-standards");
 export const getQualityStandard = (id: string) => request<QualityStandard>(`/api/quality-standards/${id}`);
+export const getQualityStandardVersion = (versionId: string) => request<PublishedQualityStandardVersion>(`/api/quality-standards/versions/${versionId}`);
 export function uploadQualityStandard(file: File) {
   const body = new FormData();
   body.append("file", file);

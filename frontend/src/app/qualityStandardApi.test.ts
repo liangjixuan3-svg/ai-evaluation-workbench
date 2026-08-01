@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseQualityStandard, publishQualityStandard, uploadQualityStandard } from "./qualityStandardApi";
+import { getQualityStandardVersion, parseQualityStandard, publishQualityStandard, uploadQualityStandard } from "./qualityStandardApi";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -30,5 +30,19 @@ describe("公司质量标准 API", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/quality-standards/standard-1/parse");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/quality-standards/standard-1/publish");
+  });
+
+  it("按评测绑定的版本 ID 读取完整规则", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version_id: "version-2", rules: {} })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getQualityStandardVersion("version-2");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/quality-standards/versions/version-2",
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: "application/json" }) }),
+    );
   });
 });

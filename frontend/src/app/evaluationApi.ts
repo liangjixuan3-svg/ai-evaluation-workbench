@@ -21,7 +21,7 @@ export interface EvaluationDetail {
   dimension_averages: Record<string, number>;
   latest_error: string | null;
   model: string;
-  quality_standard: { name: string; version: number } | null;
+  quality_standard: { name: string; version: number; version_id: string } | null;
   status: string;
   created_at: string;
 }
