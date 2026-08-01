@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
 from app.evaluation.contracts import EvaluationRequest, ProviderEvaluation
+from app.evaluation.models import PromptVersion
 from app.evaluation.providers import EvaluationProvider, ProviderIdentity
 from app.imports.models import ImportSession
 from app.ingestion.models import Conversation, DataSource
@@ -117,6 +118,22 @@ def test_create_operation_runs_and_returns_real_results() -> None:
         published_at=utc_now(),
     )
     session.add(standard)
+    prompt = PromptVersion(
+        name="customer-support-judge",
+        version="v2",
+        content="重点检查退款场景是否给出明确处理时效。",
+        active=True,
+        published_at=utc_now(),
+    )
+    session.add(prompt)
+    draft_prompt = PromptVersion(
+        name="customer-support-judge",
+        version="v3",
+        content="尚未发布的测试指令。",
+        active=False,
+        published_at=None,
+    )
+    session.add(draft_prompt)
     session.commit()
     raw_provider = TransientEvaluationTransport()
     provider = EvaluationProvider(raw_provider)
@@ -124,7 +141,7 @@ def test_create_operation_runs_and_returns_real_results() -> None:
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_operation_provider] = lambda: provider
 
-    async def exercise() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+    async def exercise() -> tuple[httpx.Response, httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             created = await client.post(
@@ -132,6 +149,19 @@ def test_create_operation_runs_and_returns_real_results() -> None:
                 json={
                     "import_id": imported.id,
                     "quality_standard_version_id": standard_version.id,
+                    "prompt_version_id": prompt.id,
+                    "sample_size": 2,
+                    "strategy": "random",
+                    "threshold": 75,
+                    "seed": 20260730,
+                },
+            )
+            rejected = await client.post(
+                "/api/operations/evaluations",
+                json={
+                    "import_id": imported.id,
+                    "quality_standard_version_id": standard_version.id,
+                    "prompt_version_id": draft_prompt.id,
                     "sample_size": 2,
                     "strategy": "random",
                     "threshold": 75,
@@ -149,11 +179,13 @@ def test_create_operation_runs_and_returns_real_results() -> None:
             results = await client.get(
                 f"/api/operations/evaluations/{created.json()['run_id']}/results"
             )
-            return created, detail, results
+            return created, detail, results, rejected
 
-    created, detail, results = asyncio.run(exercise())
+    created, detail, results, rejected = asyncio.run(exercise())
 
     assert created.status_code == 201
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "请选择已发布的评测 Prompt"
     assert detail.json()["stage"] == "completed"
     assert detail.json()["completed_count"] == 2
     assert detail.json()["quality_standard"] == {
@@ -163,5 +195,11 @@ def test_create_operation_runs_and_returns_real_results() -> None:
     }
     assert len(results.json()["items"]) == 2
     assert raw_provider.requests[-1].criteria["threshold"] == 80
+    assert raw_provider.requests[-1].instructions == prompt.content
+    assert detail.json()["prompt"] == {
+        "id": prompt.id,
+        "name": prompt.name,
+        "version": prompt.version,
+    }
     session.close()
     engine.dispose()

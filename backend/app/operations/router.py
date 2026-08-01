@@ -31,6 +31,7 @@ class StartBody(BaseModel):
 
     import_id: str
     quality_standard_version_id: str | None = None
+    prompt_version_id: str
     sample_size: int = Field(ge=1, le=10_000)
     strategy: Literal["random", "risk_first", "scenario_weighted"]
     threshold: float = Field(ge=0, le=100)

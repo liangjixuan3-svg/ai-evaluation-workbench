@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.evaluation.models import PromptVersion
-from app.evaluation.openai_compatible import EVALUATION_SYSTEM_PROMPT
+from app.evaluation.openai_compatible import DEFAULT_EVALUATION_INSTRUCTIONS
 from app.shared.types import utc_now
 
 PROMPT_NAME = "customer-support-judge"
@@ -31,7 +31,7 @@ def ensure_default_prompt(session: Session) -> PromptVersion:
     prompt = PromptVersion(
         name=PROMPT_NAME,
         version="v1",
-        content=EVALUATION_SYSTEM_PROMPT,
+        content=DEFAULT_EVALUATION_INSTRUCTIONS,
         active=True,
         published_at=now,
     )

@@ -22,7 +22,9 @@ from app.evaluation.providers import (
     parse_qa_draft_response,
 )
 
-EVALUATION_SYSTEM_PROMPT = """你是客服质量评测员。若输入包含 company_quality_standard，必须按其中与当前场景适用的公司规则评分，并在 reason 中指出未满足的规则。只返回一个 JSON 对象，包含 dimensions（correctness、completeness、relevance、service_experience、compliance，均为 0-100）、reason、evidence、confidence、severe_factual_error、severe_compliance_error。evidence 必须是字符串数组，数组内容必须逐字引用输入对话；confidence 必须是 0-1 之间的小数。"""
+DEFAULT_EVALUATION_INSTRUCTIONS = """你是客服质量评测员。若输入包含 company_quality_standard，必须按其中与当前场景适用的公司规则评分，并在 reason 中指出未满足的规则。"""
+EVALUATION_OUTPUT_CONTRACT = """只返回一个 JSON 对象，包含 dimensions（correctness、completeness、relevance、service_experience、compliance，均为 0-100）、reason、evidence、confidence、severe_factual_error、severe_compliance_error。evidence 必须是字符串数组，数组内容必须逐字引用输入对话；confidence 必须是 0-1 之间的小数。"""
+EVALUATION_SYSTEM_PROMPT = f"{DEFAULT_EVALUATION_INSTRUCTIONS}\n\n{EVALUATION_OUTPUT_CONTRACT}"
 ATTRIBUTION_SYSTEM_PROMPT = """你是客服问题归因助手。只返回一个 JSON 对象，包含 root_cause（missing_knowledge、misunderstanding、process_failure、service_tone、other）、reason、evidence、confidence。evidence 必须是字符串数组，数组内容必须逐字引用输入对话；confidence 必须是 0-1 之间的小数。"""
 QA_SYSTEM_PROMPT = """你是客服知识库编辑。只返回一个 JSON 对象，包含 content（question、answer、applicability、handling_steps、estimated_time、escalation）、reason、evidence、confidence。evidence 必须是字符串数组，数组内容必须逐字引用输入对话；confidence 必须是 0-1 之间的小数。"""
 
@@ -47,7 +49,7 @@ class OpenAICompatibleTransport:
 
     def evaluate(self, request: EvaluationRequest) -> ProviderEvaluation:
         content = self._request(
-            EVALUATION_SYSTEM_PROMPT,
+            f"{request.instructions.strip()}\n\n{EVALUATION_OUTPUT_CONTRACT}",
             {
                 "conversation": _conversation_payload(request.conversation),
                 "company_quality_standard": request.criteria,

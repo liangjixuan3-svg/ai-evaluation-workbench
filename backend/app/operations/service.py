@@ -21,7 +21,6 @@ from app.evaluation.models import (
     PromptVersion,
     RuleVersion,
 )
-from app.evaluation.openai_compatible import EVALUATION_SYSTEM_PROMPT
 from app.evaluation.providers import EvaluationProvider
 from app.imports.models import ImportSession
 from app.ingestion.contracts import SampleCandidate
@@ -53,6 +52,7 @@ DIMENSIONS = (
 class StartEvaluation:
     import_id: str
     quality_standard_version_id: str | None
+    prompt_version_id: str
     sample_size: int
     strategy: Strategy
     threshold: float
@@ -80,6 +80,7 @@ def create_evaluation_operation(
     standard_version = _published_standard_version(
         session, command.quality_standard_version_id
     )
+    prompt = _published_prompt_version(session, command.prompt_version_id)
     standard_rules = (
         QualityStandardRules.model_validate(standard_version.rules)
         if standard_version is not None
@@ -95,7 +96,6 @@ def create_evaluation_operation(
         return existing
     threshold = standard_rules.threshold if standard_rules else command.threshold
     template = _template(session, threshold, standard_version, standard_rules)
-    prompt = _prompt(session)
     rule = _rule(session, standard_version, standard_rules)
     candidates = [
         SampleCandidate(
@@ -149,6 +149,7 @@ def create_evaluation_operation(
             "strategy": command.strategy,
             "threshold": threshold,
             "quality_standard_version_id": command.quality_standard_version_id,
+            "prompt_version_id": command.prompt_version_id,
             "model": provider.identity.model,
         },
     )
@@ -239,6 +240,11 @@ def operation_detail(session: Session, run_id: str) -> dict[str, Any]:
             if run.quality_standard_version is not None
             else None
         ),
+        "prompt": {
+            "id": run.prompt_version.id,
+            "name": run.prompt_version.name,
+            "version": run.prompt_version.version,
+        },
         "status": run.status.value,
         "created_at": run.created_at.isoformat(),
     }
@@ -315,21 +321,6 @@ def _template(
     return record
 
 
-def _prompt(session: Session) -> PromptVersion:
-    record = session.scalar(
-        select(PromptVersion).where(
-            PromptVersion.name == "customer-support-judge", PromptVersion.version == "v1"
-        )
-    )
-    if record is None:
-        record = PromptVersion(
-            name="customer-support-judge", version="v1", content=EVALUATION_SYSTEM_PROMPT
-        )
-        session.add(record)
-        session.flush()
-    return record
-
-
 def _rule(
     session: Session,
     standard_version: QualityStandardVersion | None,
@@ -377,6 +368,13 @@ def _published_standard_version(
     return version
 
 
+def _published_prompt_version(session: Session, prompt_id: str) -> PromptVersion:
+    prompt = session.get(PromptVersion, prompt_id)
+    if prompt is None or prompt.published_at is None:
+        raise ValueError("请选择已发布的评测 Prompt")
+    return prompt
+
+
 def _policy(command: StartEvaluation) -> SamplingPolicy:
     ratios = {
         "random": (1.0, 0.0, 0.0),
@@ -408,6 +406,7 @@ def _operation_key(command: StartEvaluation, model: str) -> str:
             "strategy": command.strategy,
             "threshold": command.threshold,
             "quality_standard_version_id": command.quality_standard_version_id,
+            "prompt_version_id": command.prompt_version_id,
             "seed": command.seed,
             "model": model,
         },

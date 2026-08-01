@@ -14,6 +14,7 @@ from app.ingestion.contracts import Message, NormalizedConversation
 
 def _request() -> EvaluationRequest:
     return EvaluationRequest(
+        instructions="只根据售后问题评测，并解释扣分原因。",
         conversation=NormalizedConversation(
             external_id="dialog-1",
             scenario="refund",
@@ -65,6 +66,8 @@ def test_openai_transport_posts_redacted_transcript_and_parses_json() -> None:
     assert result.dimensions["correctness"] == 90
     payload = json.loads(captured[0].content)
     assert payload["model"] == "judge-model"
+    assert "只根据售后问题评测" in payload["messages"][0]["content"]
+    assert "dimensions" in payload["messages"][0]["content"]
     assert "[PHONE]" in captured[0].content.decode()
     assert "13800138000" not in captured[0].content.decode()
 

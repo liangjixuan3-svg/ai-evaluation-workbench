@@ -107,6 +107,7 @@ def _evaluate_item(
         request = EvaluationRequest(
             conversation=redact_conversation(conversation),
             criteria=dict(run.rule_version.config.get("quality_standard", {})),
+            instructions=run.prompt_version.content,
         )
         template = _TemplateSnapshot(
             weights=dict(run.template.weights), threshold=run.template.threshold

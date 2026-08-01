@@ -40,6 +40,7 @@ class _ConversationRequest(_StrictContract):
 
 class EvaluationRequest(_ConversationRequest):
     criteria: dict = Field(default_factory=dict)
+    instructions: str = Field(default="你是客服质量评测员。", min_length=1, max_length=20_000)
 
 
 class _ProviderResponse(_StrictContract):
