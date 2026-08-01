@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { getQualityStandard, listQualityStandards, parseQualityStandard, publishQualityStandard, saveQualityStandard, uploadQualityStandard, type QualityStandard, type QualityStandardSummary, type StandardRules } from "../../app/qualityStandardApi";
 import { RuleReviewEditor } from "./RuleReviewEditor";
+import { RuleSettingsNav } from "./RuleSettingsNav";
 
 export function visibleQualityStandards(items: QualityStandardSummary[]) {
   return items.filter((item) => item.status === "draft" || Boolean(item.published_version_id));
@@ -49,6 +50,7 @@ export function QualityStandardPage() {
 
   return <section className="operation-page standards-page">
     <header className="operation-hero"><div><span className="eyebrow">QUALITY STANDARD</span><h1>把公司制度<br />变成评测尺子</h1></div><p>上传 Word 或文本 PDF，由 AI 提取规则。你确认后发布，未经审核的草稿不会参与线上评测。</p></header>
+    <RuleSettingsNav />
     <div className="standards-layout">
       <aside className="standards-library"><div className="library-head"><span>标准库</span><strong>{items.length}</strong></div>
         <label className="standard-upload"><input type="file" accept=".docx,.pdf" disabled={Boolean(busy)} onChange={(event) => { const file = event.target.files?.[0]; if (file) void run("upload", () => uploadQualityStandard(file)); }} /><span>{busy === "upload" ? "正在上传…" : "+ 上传公司标准"}</span></label>

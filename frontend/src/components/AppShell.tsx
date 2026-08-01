@@ -20,7 +20,7 @@ export function AppShell() {
         </a>
         <nav aria-label="主导航">
           {navigation.map(([path, label, index]) => (
-            <NavLink key={path} to={path} end>
+            <NavLink key={path} to={path} end={path !== "/rules"}>
               <span>{index}</span>{label}
             </NavLink>
           ))}

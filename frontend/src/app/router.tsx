@@ -7,6 +7,7 @@ import { ImportPage } from "../features/imports/ImportPage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
 import { QualityStandardPage } from "../features/rules/QualityStandardPage";
 import { QualityStandardVersionPage } from "../features/rules/QualityStandardVersionPage";
+import { EvaluationPromptPage } from "../features/rules/EvaluationPromptPage";
 
 function ComingSoon({ title }: { title: string }) {
   return (
@@ -32,6 +33,7 @@ export function AppRouter() {
         <Route path="runs/:runId" element={<RunDetailPage />} />
         <Route path="runs" element={<Navigate to="/runs/new" replace />} />
         <Route path="rules/versions/:versionId" element={<QualityStandardVersionPage />} />
+        <Route path="rules/prompts" element={<EvaluationPromptPage />} />
         <Route path="rules/*" element={<QualityStandardPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
