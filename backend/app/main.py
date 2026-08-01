@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.alerts.router import router as alerts_router
 from app.dashboard.router import router as dashboard_router
 from app.evaluation.router import router as evaluation_router
+from app.evaluation_prompts.router import router as evaluation_prompts_router
 from app.imports.router import router as imports_router
 from app.ingestion.router import router as ingestion_router
 from app.operations.router import router as operations_router
@@ -23,6 +24,7 @@ def create_app() -> FastAPI:
     app.include_router(operations_router)
     app.include_router(quality_standards_router)
     app.include_router(evaluation_router)
+    app.include_router(evaluation_prompts_router)
     app.include_router(alerts_router)
     app.include_router(remediation_router)
     app.include_router(retest_router)
