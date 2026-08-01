@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 from docx import Document
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -145,6 +146,45 @@ def test_same_filename_with_different_content_gets_a_distinct_name(
     assert first.json()["id"] != second.json()["id"]
     assert first.json()["name"] == "客服标准"
     assert second.json()["name"].startswith("客服标准-")
+
+
+def test_list_does_not_offer_legacy_invalid_rules_for_evaluation(
+    api: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, sessions = api
+    standard_id = "legacy-standard"
+    with sessions() as session:
+        now = datetime.now(UTC)
+        session.execute(
+            text(
+                "INSERT INTO quality_standards (id, name, status, created_at, updated_at) "
+                "VALUES (:id, '旧测试标准', 'published', :now, :now)"
+            ),
+            {"id": standard_id, "now": now},
+        )
+        session.execute(
+            text(
+                "INSERT INTO quality_standard_versions "
+                "(id, standard_id, version_number, source_filename, source_sha256, "
+                "upload_dedup_key, source_path, rules, published_at) VALUES "
+                "('legacy-version', :standard_id, 1, 'legacy.docx', :sha, NULL, "
+                "'legacy.docx', :rules, :now)"
+            ),
+            {
+                "standard_id": standard_id,
+                "sha": "f" * 64,
+                "rules": json.dumps({"validated": True}),
+                "now": now,
+            },
+        )
+        session.commit()
+
+    response = client.get("/api/quality-standards")
+
+    assert response.status_code == 200
+    item = next(value for value in response.json() if value["id"] == standard_id)
+    assert item["published_version_id"] is None
+    assert item["published_rules"] is None
 
 
 def test_parse_review_and_publish_standard(

@@ -24,7 +24,11 @@ export function NewEvaluationPage() {
       .then(([items, status, standardItems]) => {
         setImports(items);
         setProvider(status);
-        const published = standardItems.filter((item) => item.published_version_id);
+        const published = standardItems.filter((item) =>
+          item.published_version_id
+          && item.published_rules?.weights
+          && Object.keys(item.published_rules.weights).length === 5
+        );
         setStandards(published);
         setStandardVersionId((current) => current || published[0]?.published_version_id || "");
         setImportId((current) => current || items[0]?.id || "");

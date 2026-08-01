@@ -49,23 +49,28 @@ async def upload_standard(
 def get_standards(session: Annotated[Session, Depends(get_session)]) -> list[dict[str, Any]]:
     payload = []
     for item in list_standards(session):
-        published = next(
-            (
-                version
-                for version in sorted(
-                    item.versions, key=lambda value: value.version_number, reverse=True
+        published = None
+        published_rules = None
+        for version in sorted(
+            item.versions, key=lambda value: value.version_number, reverse=True
+        ):
+            if version.published_at is None:
+                continue
+            try:
+                published_rules = QualityStandardRules.model_validate(version.rules).model_dump(
+                    mode="json"
                 )
-                if version.published_at is not None
-            ),
-            None,
-        )
+            except ValueError:
+                continue
+            published = version
+            break
         payload.append({
             "id": item.id,
             "name": item.name,
             "status": item.status,
             "latest_version": max((version.version_number for version in item.versions), default=0),
             "published_version_id": published.id if published else None,
-            "published_rules": published.rules if published else None,
+            "published_rules": published_rules,
             "updated_at": item.updated_at.isoformat(),
         })
     return payload
