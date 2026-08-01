@@ -1,6 +1,7 @@
 export interface StartEvaluationInput {
   import_id: string;
   quality_standard_version_id: string;
+  prompt_version_id: string;
   sample_size: number;
   strategy: "random" | "risk_first" | "scenario_weighted";
   threshold: number;
@@ -22,6 +23,7 @@ export interface EvaluationDetail {
   latest_error: string | null;
   model: string;
   quality_standard: { name: string; version: number; version_id: string } | null;
+  prompt: { id: string; name: string; version: string };
   status: string;
   created_at: string;
 }
