@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { getQualityStandard, listQualityStandards, parseQualityStandard, publishQualityStandard, saveQualityStandard, uploadQualityStandard, type QualityStandard, type QualityStandardSummary, type StandardRules } from "../../app/qualityStandardApi";
 import { RuleReviewEditor } from "./RuleReviewEditor";
+
+export function PublishedStandardNote({ versionId, versionNumber }: { versionId: string; versionNumber: number }) {
+  return <div className="published-note"><strong>这个版本已经锁定</strong><p>已发布标准不可修改，保证后续每次评测都能追溯到当时使用的规则。</p><Link className="secondary-button published-version-button" to={`/rules/versions/${versionId}`}>查看 V{versionNumber} 完整规则 →</Link></div>;
+}
 
 export function QualityStandardPage() {
   const [items, setItems] = useState<QualityStandardSummary[]>([]);
@@ -31,6 +36,7 @@ export function QualityStandardPage() {
 
   const pending = rules ? [...rules.common_rules, ...rules.scenarios.flatMap((item) => item.rules)].filter((rule) => !rule.confirmed).length : 0;
   const weightTotal = rules ? Object.values(rules.weights).reduce((sum, item) => sum + item, 0) : 0;
+  const publishedVersion = selected ? [...selected.versions].reverse().find((version) => Boolean(version.published_at)) : undefined;
 
   return <section className="operation-page standards-page">
     <header className="operation-hero"><div><span className="eyebrow">QUALITY STANDARD</span><h1>把公司制度<br />变成评测尺子</h1></div><p>上传 Word 或文本 PDF，由 AI 提取规则。你确认后发布，未经审核的草稿不会参与线上评测。</p></header>
@@ -44,7 +50,7 @@ export function QualityStandardPage() {
         <div className="standard-title"><div><span>{selected.status === "published" ? "已发布标准" : "审核草稿"}</span><h2>{selected.name}</h2><p>{selected.versions.at(-1)?.source_filename}</p></div><div className={`standard-state ${selected.status}`}>{selected.status === "published" ? "已发布" : selected.parse_jobs.at(-1)?.status === "completed" ? "待审核" : "待解析"}</div></div>
         {selected.draft && selected.parse_jobs.at(-1)?.status !== "completed" && <div className="parse-panel"><span>01</span><div><strong>让 AI 读取制度并生成规则草稿</strong><p>解析通常需要数十秒。AI 只生成草稿，不会自动发布。</p></div><button className="primary-button" disabled={Boolean(busy)} onClick={() => void run("parse", () => parseQualityStandard(selected.id))}>{busy === "parse" ? "正在解析…" : "开始 AI 解析 →"}</button></div>}
         {rules && selected.draft && <><RuleReviewEditor value={rules} onChange={setRules} /><div className="publish-bar"><div><strong>{pending ? `${pending} 条规则待确认` : "规则已全部确认"}</strong><small>权重合计 {Math.round(weightTotal * 100)}%</small></div><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void run("save", () => saveQualityStandard(selected.id, rules))}>保存草稿</button><button className="primary-button" disabled={Boolean(busy) || pending > 0 || Math.abs(weightTotal - 1) > 0.0001} onClick={() => void run("publish", async () => { await saveQualityStandard(selected.id, rules); return publishQualityStandard(selected.id); })}>{busy === "publish" ? "正在发布…" : "发布为公司标准 →"}</button></div></>}
-        {selected.status === "published" && <div className="published-note"><strong>这个版本已经锁定</strong><p>已发布标准不可修改，保证后续每次评测都能追溯到当时使用的规则。</p></div>}
+        {selected.status === "published" && publishedVersion && <PublishedStandardNote versionId={publishedVersion.id} versionNumber={publishedVersion.version_number} />}
       </>}</main>
     </div>
     {error && <div className="operation-error" role="alert">{error}</div>}
