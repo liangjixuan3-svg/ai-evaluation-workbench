@@ -19,6 +19,7 @@ from app.quality_standards.models import (
     QualityStandardParseJob,
     QualityStandardVersion,
 )
+from app.quality_standards.router import get_standard_parse_transport
 from app.quality_standards.storage import delete_document
 
 
@@ -142,6 +143,67 @@ def test_same_filename_with_different_content_gets_a_distinct_name(
     assert first.json()["id"] != second.json()["id"]
     assert first.json()["name"] == "客服标准"
     assert second.json()["name"].startswith("客服标准-")
+
+
+def test_parse_review_and_publish_standard(
+    api: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, _ = api
+
+    class Transport:
+        def parse(self, sections) -> dict:
+            return {
+                "threshold": 80,
+                "weights": {
+                    "correctness": 0.3,
+                    "completeness": 0.2,
+                    "relevance": 0.2,
+                    "service_experience": 0.15,
+                    "compliance": 0.15,
+                },
+                "anchors": [
+                    {"level": "excellent", "description": "完全符合"},
+                    {"level": "good", "description": "基本符合"},
+                    {"level": "acceptable", "description": "勉强可用"},
+                    {"level": "poor", "description": "明显不足"},
+                    {"level": "unacceptable", "description": "不可接受"},
+                ],
+                "common_rules": [{
+                    "id": "rule-1", "title": "告知时效",
+                    "requirement": "必须告知处理时效", "dimension": "completeness",
+                    "effect": {"kind": "normal", "dimension_cap": None},
+                    "source_quote": "必须告知处理时效", "source_locator": "第 1 段",
+                    "confidence": 0.93, "confirmed": True,
+                }],
+                "scenarios": [],
+            }
+
+    client.app.dependency_overrides[get_standard_parse_transport] = lambda: Transport()
+    uploaded = client.post(
+        "/api/quality-standards",
+        files={"file": ("客服规范.docx", _docx_bytes("客服必须告知处理时效。"), "application/octet-stream")},
+    ).json()
+
+    parsed = client.post(f"/api/quality-standards/{uploaded['id']}/parse")
+    assert parsed.status_code == 200
+    assert parsed.json()["parse_jobs"][0]["status"] == "completed"
+    rules = parsed.json()["draft"]["rules"]
+    assert rules["threshold"] == 80
+    assert rules["common_rules"][0]["confirmed"] is False
+
+    blocked = client.post(f"/api/quality-standards/{uploaded['id']}/publish")
+    assert blocked.status_code == 422
+    assert "未人工确认" in blocked.json()["detail"]
+
+    rules["common_rules"][0]["confirmed"] = True
+    saved = client.put(f"/api/quality-standards/{uploaded['id']}/draft", json=rules)
+    published = client.post(f"/api/quality-standards/{uploaded['id']}/publish")
+
+    assert saved.status_code == 200
+    assert published.status_code == 200
+    assert published.json()["status"] == "published"
+    assert published.json()["draft"] is None
+    assert published.json()["versions"][0]["published_at"] is not None
 
 
 def test_delete_published_standard_returns_conflict_and_preserves_file(

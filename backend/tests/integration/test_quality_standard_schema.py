@@ -117,8 +117,8 @@ def test_published_version_triggers_block_bulk_update_and_delete() -> None:
                 "trg_quality_standard_versions_immutable_update",
                 "trg_quality_standard_versions_immutable_delete",
             }
-
-        with engine.begin() as connection:
+            connection.rollback()
+            transaction = connection.begin()
             now = datetime.now(UTC)
             connection.execute(
                 text(
@@ -138,26 +138,27 @@ def test_published_version_triggers_block_bulk_update_and_delete() -> None:
                 {
                     "id": version_id,
                     "standard_id": standard_id,
-                    "sha256": "a" * 64,
+                    "sha256": uuid4().hex * 2,
                     "path": "quality-standards/standard.docx",
                     "rules": json.dumps({"validated": True}),
                     "now": now,
                 },
             )
-
-        with pytest.raises(DBAPIError, match="immutable"), engine.begin() as connection:
-            connection.execute(
-                text(
-                    "UPDATE quality_standard_versions SET source_path = 'bypassed.docx' "
-                    "WHERE id = :id"
-                ),
-                {"id": version_id},
-            )
-
-        with pytest.raises(DBAPIError, match="immutable"), engine.begin() as connection:
-            connection.execute(
-                text("DELETE FROM quality_standard_versions WHERE id = :id"),
-                {"id": version_id},
-            )
+            try:
+                with pytest.raises(DBAPIError, match="immutable"):
+                    connection.execute(
+                        text(
+                            "UPDATE quality_standard_versions SET source_path = "
+                            "'bypassed.docx' WHERE id = :id"
+                        ),
+                        {"id": version_id},
+                    )
+                with pytest.raises(DBAPIError, match="immutable"):
+                    connection.execute(
+                        text("DELETE FROM quality_standard_versions WHERE id = :id"),
+                        {"id": version_id},
+                    )
+            finally:
+                transaction.rollback()
     finally:
         engine.dispose()

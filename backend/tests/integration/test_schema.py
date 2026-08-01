@@ -54,6 +54,9 @@ EXPECTED_TABLES = {
     "jobs",
     "model_call_records",
     "prompt_versions",
+    "quality_standard_parse_jobs",
+    "quality_standard_versions",
+    "quality_standards",
     "qa_drafts",
     "qa_evidence",
     "qa_export_items",
@@ -213,6 +216,7 @@ def test_initial_schema_uses_innodb_utf8mb4_and_native_json(engine) -> None:
         ("evaluation_results", "dimension_scores"),
         ("jobs", "payload"),
         ("qa_versions", "content"),
+        ("quality_standard_versions", "rules"),
     }
 
 

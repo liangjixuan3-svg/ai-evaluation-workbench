@@ -7,18 +7,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.quality_standards.contracts import QualityStandardRules
 from app.quality_standards.documents import extract_document
 from app.quality_standards.models import (
     QualityStandard,
     QualityStandardParseJob,
     QualityStandardVersion,
 )
+from app.quality_standards.parser import StandardParseTransport, parse_standard
 from app.quality_standards.storage import (
     delete_document,
     read_document,
     restore_document,
     store_document,
 )
+from app.shared.types import utc_now
 
 
 class QualityStandardError(ValueError):
@@ -27,6 +30,79 @@ class QualityStandardError(ValueError):
 
 class PublishedStandardError(QualityStandardError):
     pass
+
+
+def parse_standard_draft(
+    session: Session,
+    storage_dir: Path,
+    standard_id: str,
+    transport: StandardParseTransport,
+) -> QualityStandard:
+    standard = get_standard(session, standard_id)
+    draft = _draft_version(standard)
+    if draft is None:
+        raise PublishedStandardError("该标准没有可解析的草稿")
+    job = max(standard.parse_jobs, key=lambda item: item.created_at, default=None)
+    if job is None:
+        job = QualityStandardParseJob(status="queued")
+        standard.parse_jobs.append(job)
+    job.status = "running"
+    job.attempts += 1
+    job.error_summary = None
+    session.commit()
+    try:
+        content = read_document(Path(draft.source_path), storage_dir)
+        extracted = extract_document(draft.source_filename, content)
+        rules = parse_standard(extracted.sections, transport)
+        draft.rules = rules.model_dump(mode="json")
+        job.status = "completed"
+        standard.updated_at = utc_now()
+        session.commit()
+    except Exception as error:
+        session.rollback()
+        failed_job = session.get(QualityStandardParseJob, job.id)
+        if failed_job is not None:
+            failed_job.status = "failed"
+            failed_job.error_summary = str(error)[:1000]
+            session.commit()
+        raise QualityStandardError(f"解析失败：{error}") from error
+    return get_standard(session, standard_id)
+
+
+def update_standard_draft(
+    session: Session, standard_id: str, rules: QualityStandardRules
+) -> QualityStandard:
+    standard = get_standard(session, standard_id)
+    draft = _draft_version(standard)
+    if draft is None:
+        raise PublishedStandardError("已发布标准不能直接修改，请创建新版本")
+    draft.rules = rules.model_dump(mode="json")
+    standard.updated_at = utc_now()
+    session.commit()
+    return get_standard(session, standard_id)
+
+
+def publish_standard(session: Session, standard_id: str) -> QualityStandard:
+    standard = get_standard(session, standard_id)
+    draft = _draft_version(standard)
+    if draft is None:
+        raise PublishedStandardError("该标准没有可发布的草稿")
+    rules = QualityStandardRules.model_validate(draft.rules)
+    pending = [
+        rule.title
+        for rule in [
+            *rules.common_rules,
+            *(rule for scenario in rules.scenarios for rule in scenario.rules),
+        ]
+        if not rule.confirmed
+    ]
+    if pending:
+        raise QualityStandardError(f"还有 {len(pending)} 条规则未人工确认")
+    draft.published_at = utc_now()
+    standard.status = "published"
+    standard.updated_at = utc_now()
+    session.commit()
+    return get_standard(session, standard_id)
 
 
 def create_standard(
@@ -146,6 +222,17 @@ def _version_payload(version: QualityStandardVersion) -> dict[str, Any]:
         "rules": version.rules,
         "published_at": version.published_at.isoformat() if version.published_at else None,
     }
+
+
+def _draft_version(standard: QualityStandard) -> QualityStandardVersion | None:
+    return next(
+        (
+            item
+            for item in sorted(standard.versions, key=lambda value: value.version_number, reverse=True)
+            if item.published_at is None
+        ),
+        None,
+    )
 
 
 def _standard_by_hash(session: Session, file_hash: str) -> QualityStandard | None:

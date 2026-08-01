@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
+from app.quality_standards.contracts import QualityStandardRules
 from app.quality_standards.documents import MAX_DOCUMENT_SIZE
+from app.quality_standards.parser import StandardParseTransport
+from app.quality_standards.provider import OpenAICompatibleStandardTransport
 from app.quality_standards.service import (
     PublishedStandardError,
     QualityStandardError,
@@ -15,10 +18,17 @@ from app.quality_standards.service import (
     delete_standard,
     get_standard,
     list_standards,
+    parse_standard_draft,
+    publish_standard,
     standard_payload,
+    update_standard_draft,
 )
 
 router = APIRouter(prefix="/api/quality-standards", tags=["quality-standards"])
+
+
+def get_standard_parse_transport() -> StandardParseTransport:
+    return OpenAICompatibleStandardTransport(settings)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -70,6 +80,54 @@ def remove_standard(
     except PublishedStandardError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{standard_id}/parse")
+def parse_uploaded_standard(
+    standard_id: str,
+    session: Annotated[Session, Depends(get_session)],
+    transport: Annotated[StandardParseTransport, Depends(get_standard_parse_transport)],
+) -> dict[str, Any]:
+    try:
+        return standard_payload(
+            parse_standard_draft(
+                session, settings.quality_standard_storage_dir, standard_id, transport
+            )
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PublishedStandardError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (QualityStandardError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.put("/{standard_id}/draft")
+def save_standard_draft(
+    standard_id: str,
+    rules: QualityStandardRules,
+    session: Annotated[Session, Depends(get_session)],
+) -> dict[str, Any]:
+    try:
+        return standard_payload(update_standard_draft(session, standard_id, rules))
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PublishedStandardError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/{standard_id}/publish")
+def publish_standard_draft(
+    standard_id: str, session: Annotated[Session, Depends(get_session)]
+) -> dict[str, Any]:
+    try:
+        return standard_payload(publish_standard(session, standard_id))
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PublishedStandardError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (QualityStandardError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 async def _read_limited(file: UploadFile) -> bytes:
