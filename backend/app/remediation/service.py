@@ -56,6 +56,7 @@ class AttributionCommand:
     member_ids: tuple[str, ...]
     evidence: tuple[str, ...]
     bulk: bool = False
+    confirm_cluster: bool = False
 
 
 def confirm_attribution(session: Session, command: AttributionCommand) -> Task | None:
@@ -279,6 +280,14 @@ def _cluster_confidence(session: Session, cluster_id: str) -> Confidence:
 def _members_to_confirm(
     members: list[ClusterMember], command: AttributionCommand, confidence: Confidence
 ) -> list[ClusterMember]:
+    if command.bulk and command.confirm_cluster:
+        raise AttributionConfirmationError("bulk and confirm_cluster cannot both be true")
+    if command.confirm_cluster:
+        if any(
+            member.confirmed_root_cause not in (None, command.root_cause) for member in members
+        ):
+            raise AttributionConfirmationError("已确认的归因不能被其他原因覆盖")
+        return [member for member in members if member.confirmed_root_cause is None]
     if command.bulk:
         if confidence != Confidence.HIGH:
             raise BulkConfirmationNotAllowed("only high-confidence clusters may be bulk confirmed")

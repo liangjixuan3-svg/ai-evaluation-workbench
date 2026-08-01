@@ -34,6 +34,7 @@ class AttributionConfirmationBody(_StrictBody):
     member_ids: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(min_length=1)
     bulk: bool = False
+    confirm_cluster: bool = False
 
 
 class QAApprovalBody(_StrictBody):
@@ -74,6 +75,7 @@ def confirm_cluster_attribution(
                 member_ids=tuple(body.member_ids),
                 evidence=tuple(body.evidence),
                 bulk=body.bulk,
+                confirm_cluster=body.confirm_cluster,
             ),
         )
     except (LookupError, ValueError) as error:

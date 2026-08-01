@@ -6,6 +6,7 @@ from app.evaluation.router import router as evaluation_router
 from app.evaluation_prompts.router import router as evaluation_prompts_router
 from app.imports.router import router as imports_router
 from app.ingestion.router import router as ingestion_router
+from app.issues.router import router as issues_router
 from app.operations.router import router as operations_router
 from app.quality_standards.router import router as quality_standards_router
 from app.remediation.router import router as remediation_router
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(quality_standards_router)
     app.include_router(evaluation_router)
     app.include_router(evaluation_prompts_router)
+    app.include_router(issues_router)
     app.include_router(alerts_router)
     app.include_router(remediation_router)
     app.include_router(retest_router)

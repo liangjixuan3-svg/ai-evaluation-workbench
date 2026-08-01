@@ -10,14 +10,22 @@ from sqlalchemy.orm import Session
 from app.alerts.models import Alert, AlertResult
 from app.analysis.models import ClusterMember, RootCauseSuggestion
 from app.analysis.service import attribute_cluster
+from app.config import settings
 from app.db import get_session
-from app.evaluation.providers import EvaluationProvider, FakeEvaluationProvider
+from app.evaluation.openai_compatible import (
+    ModelProviderError,
+    build_evaluation_provider,
+    provider_is_configured,
+)
+from app.evaluation.providers import EvaluationProvider
 
 router = APIRouter(tags=["alerts"])
 
 
 def get_evaluation_provider() -> EvaluationProvider:
-    return FakeEvaluationProvider()
+    if not provider_is_configured(settings):
+        raise HTTPException(status_code=503, detail="真实模型尚未配置")
+    return build_evaluation_provider(settings)
 
 
 class AlertCard(BaseModel):
@@ -89,6 +97,10 @@ def create_attribution_suggestion(
         suggestion = attribute_cluster(session, cluster_id, provider)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ModelProviderError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return AttributionSuggestionResponse(
         root_cause=suggestion.root_cause.value,
         reason=suggestion.reason,
