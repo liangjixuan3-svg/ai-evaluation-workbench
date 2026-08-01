@@ -5,6 +5,7 @@ import { NewEvaluationPage } from "../features/evaluations/NewEvaluationPage";
 import { RunDetailPage } from "../features/evaluations/RunDetailPage";
 import { ImportPage } from "../features/imports/ImportPage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
+import { QualityStandardPage } from "../features/rules/QualityStandardPage";
 
 function ComingSoon({ title }: { title: string }) {
   return (
@@ -29,7 +30,7 @@ export function AppRouter() {
         <Route path="runs/new" element={<NewEvaluationPage />} />
         <Route path="runs/:runId" element={<RunDetailPage />} />
         <Route path="runs" element={<Navigate to="/runs/new" replace />} />
-        <Route path="rules/*" element={<ComingSoon title="评测规则" />} />
+        <Route path="rules/*" element={<QualityStandardPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
