@@ -39,7 +39,7 @@ class _ConversationRequest(_StrictContract):
 
 
 class EvaluationRequest(_ConversationRequest):
-    pass
+    criteria: dict = Field(default_factory=dict)
 
 
 class _ProviderResponse(_StrictContract):

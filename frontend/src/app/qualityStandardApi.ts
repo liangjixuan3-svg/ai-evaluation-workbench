@@ -25,6 +25,8 @@ export interface QualityStandardSummary {
   name: string;
   status: "draft" | "published";
   latest_version: number;
+  published_version_id: string | null;
+  published_rules: StandardRules | null;
   updated_at: string;
 }
 

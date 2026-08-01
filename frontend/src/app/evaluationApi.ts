@@ -1,5 +1,6 @@
 export interface StartEvaluationInput {
   import_id: string;
+  quality_standard_version_id: string;
   sample_size: number;
   strategy: "random" | "risk_first" | "scenario_weighted";
   threshold: number;
@@ -20,6 +21,7 @@ export interface EvaluationDetail {
   dimension_averages: Record<string, number>;
   latest_error: string | null;
   model: string;
+  quality_standard: { name: string; version: number } | null;
   status: string;
   created_at: string;
 }

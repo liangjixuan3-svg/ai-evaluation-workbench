@@ -106,9 +106,11 @@ def test_list_detail_and_delete_draft_cleanup_file(
         {
             "id": uploaded["id"],
             "name": "standard",
-            "status": "draft",
-            "latest_version": 1,
-            "updated_at": uploaded["updated_at"],
+                "status": "draft",
+                "latest_version": 1,
+                "published_version_id": None,
+                "published_rules": None,
+                "updated_at": uploaded["updated_at"],
         }
     ]
     assert detail.status_code == 200

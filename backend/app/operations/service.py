@@ -33,6 +33,8 @@ from app.ingestion.models import (
 from app.ingestion.sampling import SamplingPolicy, select_sample
 from app.jobs.models import Job
 from app.jobs.repository import enqueue_job
+from app.quality_standards.contracts import QualityStandardRules
+from app.quality_standards.models import QualityStandardVersion
 from app.shared.audit import record_audit
 from app.shared.enums import RunStatus
 from app.shared.types import utc_now
@@ -50,6 +52,7 @@ DIMENSIONS = (
 @dataclass(frozen=True, slots=True)
 class StartEvaluation:
     import_id: str
+    quality_standard_version_id: str | None
     sample_size: int
     strategy: Strategy
     threshold: float
@@ -74,6 +77,14 @@ def create_evaluation_operation(
         raise ValueError(f"抽样数量必须在 1 到 {len(available)} 之间")
     if command.threshold < 0 or command.threshold > 100:
         raise ValueError("通过阈值必须在 0 到 100 之间")
+    standard_version = _published_standard_version(
+        session, command.quality_standard_version_id
+    )
+    standard_rules = (
+        QualityStandardRules.model_validate(standard_version.rules)
+        if standard_version is not None
+        else None
+    )
     operation_key = _operation_key(command, provider.identity.model)
     existing = session.scalar(
         select(EvaluationRun)
@@ -82,9 +93,10 @@ def create_evaluation_operation(
     )
     if existing is not None:
         return existing
-    template = _template(session, command.threshold)
+    threshold = standard_rules.threshold if standard_rules else command.threshold
+    template = _template(session, threshold, standard_version, standard_rules)
     prompt = _prompt(session)
-    rule = _rule(session)
+    rule = _rule(session, standard_version, standard_rules)
     candidates = [
         SampleCandidate(
             id=UUID(conversation.id),
@@ -118,6 +130,7 @@ def create_evaluation_operation(
         template_id=template.id,
         prompt_version_id=prompt.id,
         rule_version_id=rule.id,
+        quality_standard_version_id=standard_version.id if standard_version else None,
         provider=provider.identity.provider,
         model=provider.identity.model,
         model_parameters={"temperature": 0},
@@ -134,7 +147,8 @@ def create_evaluation_operation(
             "import_id": command.import_id,
             "sample_size": len(selected_ids),
             "strategy": command.strategy,
-            "threshold": command.threshold,
+            "threshold": threshold,
+            "quality_standard_version_id": command.quality_standard_version_id,
             "model": provider.identity.model,
         },
     )
@@ -216,6 +230,14 @@ def operation_detail(session: Session, run_id: str) -> dict[str, Any]:
         "dimension_averages": dimension_averages,
         "latest_error": latest_error,
         "model": run.model,
+        "quality_standard": (
+            {
+                "name": run.quality_standard_version.standard.name,
+                "version": run.quality_standard_version.version_number,
+            }
+            if run.quality_standard_version is not None
+            else None
+        ),
         "status": run.status.value,
         "created_at": run.created_at.isoformat(),
     }
@@ -262,8 +284,13 @@ def operation_results(
     }
 
 
-def _template(session: Session, threshold: float) -> EvaluationTemplate:
-    version = f"v1-t{threshold:g}"
+def _template(
+    session: Session,
+    threshold: float,
+    standard_version: QualityStandardVersion | None,
+    standard_rules: QualityStandardRules | None,
+) -> EvaluationTemplate:
+    version = standard_version.id if standard_version else f"v1-t{threshold:g}"
     record = session.scalar(
         select(EvaluationTemplate).where(
             EvaluationTemplate.name == "customer-support-quality",
@@ -274,7 +301,11 @@ def _template(session: Session, threshold: float) -> EvaluationTemplate:
         record = EvaluationTemplate(
             name="customer-support-quality",
             version=version,
-            weights={dimension: 0.2 for dimension in DIMENSIONS},
+            weights=(
+                standard_rules.model_dump(mode="json")["weights"]
+                if standard_rules
+                else {dimension: 0.2 for dimension in DIMENSIONS}
+            ),
             threshold=Decimal(str(threshold)),
             veto_rules={"severe_factual_error": True, "severe_compliance_error": True},
         )
@@ -298,7 +329,26 @@ def _prompt(session: Session) -> PromptVersion:
     return record
 
 
-def _rule(session: Session) -> RuleVersion:
+def _rule(
+    session: Session,
+    standard_version: QualityStandardVersion | None,
+    standard_rules: QualityStandardRules | None,
+) -> RuleVersion:
+    if standard_version is not None and standard_rules is not None:
+        kind = "company-quality-standard"
+        version = standard_version.id
+        record = session.scalar(
+            select(RuleVersion).where(RuleVersion.kind == kind, RuleVersion.version == version)
+        )
+        if record is None:
+            record = RuleVersion(
+                kind=kind,
+                version=version,
+                config={"quality_standard": standard_rules.model_dump(mode="json")},
+            )
+            session.add(record)
+            session.flush()
+        return record
     record = session.scalar(
         select(RuleVersion).where(
             RuleVersion.kind == "evaluation-operation", RuleVersion.version == "v1"
@@ -313,6 +363,17 @@ def _rule(session: Session) -> RuleVersion:
         session.add(record)
         session.flush()
     return record
+
+
+def _published_standard_version(
+    session: Session, version_id: str | None
+) -> QualityStandardVersion | None:
+    if version_id is None:
+        return None
+    version = session.get(QualityStandardVersion, version_id)
+    if version is None or version.published_at is None:
+        raise ValueError("请选择已发布的公司质量标准")
+    return version
 
 
 def _policy(command: StartEvaluation) -> SamplingPolicy:
@@ -345,6 +406,7 @@ def _operation_key(command: StartEvaluation, model: str) -> str:
             "size": command.sample_size,
             "strategy": command.strategy,
             "threshold": command.threshold,
+            "quality_standard_version_id": command.quality_standard_version_id,
             "seed": command.seed,
             "model": model,
         },

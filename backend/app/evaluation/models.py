@@ -95,6 +95,13 @@ class EvaluationRun(Base):
     rule_version_id: Mapped[str] = mapped_column(
         CHAR(36), ForeignKey("rule_versions.id", name="fk_eval_run_rule"), nullable=False
     )
+    quality_standard_version_id: Mapped[str | None] = mapped_column(
+        CHAR(36),
+        ForeignKey(
+            "quality_standard_versions.id", name="fk_eval_run_quality_standard_version"
+        ),
+        nullable=True,
+    )
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     model_parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -111,6 +118,7 @@ class EvaluationRun(Base):
     template: Mapped[EvaluationTemplate] = relationship()
     prompt_version: Mapped[PromptVersion] = relationship()
     rule_version: Mapped[RuleVersion] = relationship()
+    quality_standard_version: Mapped[Any | None] = relationship("QualityStandardVersion")
 
 
 class EvaluationResult(Base):

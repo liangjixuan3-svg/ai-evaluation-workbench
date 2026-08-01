@@ -47,16 +47,28 @@ async def upload_standard(
 
 @router.get("")
 def get_standards(session: Annotated[Session, Depends(get_session)]) -> list[dict[str, Any]]:
-    return [
-        {
+    payload = []
+    for item in list_standards(session):
+        published = next(
+            (
+                version
+                for version in sorted(
+                    item.versions, key=lambda value: value.version_number, reverse=True
+                )
+                if version.published_at is not None
+            ),
+            None,
+        )
+        payload.append({
             "id": item.id,
             "name": item.name,
             "status": item.status,
             "latest_version": max((version.version_number for version in item.versions), default=0),
+            "published_version_id": published.id if published else None,
+            "published_rules": published.rules if published else None,
             "updated_at": item.updated_at.isoformat(),
-        }
-        for item in list_standards(session)
-    ]
+        })
+    return payload
 
 
 @router.get("/{standard_id}")

@@ -30,6 +30,7 @@ class StartBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     import_id: str
+    quality_standard_version_id: str | None = None
     sample_size: int = Field(ge=1, le=10_000)
     strategy: Literal["random", "risk_first", "scenario_weighted"]
     threshold: float = Field(ge=0, le=100)

@@ -14,6 +14,7 @@ describe("evaluation API", () => {
 
     await startEvaluation({
       import_id: "import-1",
+      quality_standard_version_id: "standard-v1",
       sample_size: 100,
       strategy: "risk_first",
       threshold: 75,

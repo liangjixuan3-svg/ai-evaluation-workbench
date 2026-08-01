@@ -104,7 +104,10 @@ def _evaluate_item(
         if run is None or conversation is None:
             raise LookupError("evaluation run or conversation no longer exists")
 
-        request = EvaluationRequest(conversation=redact_conversation(conversation))
+        request = EvaluationRequest(
+            conversation=redact_conversation(conversation),
+            criteria=dict(run.rule_version.config.get("quality_standard", {})),
+        )
         template = _TemplateSnapshot(
             weights=dict(run.template.weights), threshold=run.template.threshold
         )

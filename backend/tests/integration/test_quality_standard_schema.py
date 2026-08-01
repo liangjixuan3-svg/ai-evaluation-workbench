@@ -96,6 +96,18 @@ def test_quality_standard_schema_is_mysql_native() -> None:
                 and item["constrained_columns"] == ["standard_id"]
                 for item in foreign_keys
             )
+
+        evaluation_columns = {
+            column["name"] for column in inspector.get_columns("evaluation_runs")
+        }
+        assert "quality_standard_version_id" in evaluation_columns
+        evaluation_foreign_keys = inspector.get_foreign_keys("evaluation_runs")
+        assert any(
+            item["name"] == "fk_eval_run_quality_standard_version"
+            and item["referred_table"] == "quality_standard_versions"
+            and item["constrained_columns"] == ["quality_standard_version_id"]
+            for item in evaluation_foreign_keys
+        )
     finally:
         engine.dispose()
 
