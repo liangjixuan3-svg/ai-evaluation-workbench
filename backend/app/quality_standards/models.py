@@ -39,8 +39,12 @@ class QualityStandard(Base):
         UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False
     )
 
-    versions: Mapped[list[QualityStandardVersion]] = relationship(back_populates="standard")
-    parse_jobs: Mapped[list[QualityStandardParseJob]] = relationship(back_populates="standard")
+    versions: Mapped[list[QualityStandardVersion]] = relationship(
+        back_populates="standard", cascade="all, delete-orphan"
+    )
+    parse_jobs: Mapped[list[QualityStandardParseJob]] = relationship(
+        back_populates="standard", cascade="all, delete-orphan"
+    )
 
 
 class QualityStandardVersion(Base):
