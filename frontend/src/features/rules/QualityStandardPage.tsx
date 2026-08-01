@@ -4,6 +4,10 @@ import { Link } from "react-router-dom";
 import { getQualityStandard, listQualityStandards, parseQualityStandard, publishQualityStandard, saveQualityStandard, uploadQualityStandard, type QualityStandard, type QualityStandardSummary, type StandardRules } from "../../app/qualityStandardApi";
 import { RuleReviewEditor } from "./RuleReviewEditor";
 
+export function visibleQualityStandards(items: QualityStandardSummary[]) {
+  return items.filter((item) => item.status === "draft" || Boolean(item.published_version_id));
+}
+
 export function PublishedStandardNote({ versionId, versionNumber }: { versionId: string; versionNumber: number }) {
   return <div className="published-note"><strong>这个版本已经锁定</strong><p>已发布标准不可修改，保证后续每次评测都能追溯到当时使用的规则。</p><Link className="secondary-button published-version-button" to={`/rules/versions/${versionId}`}>查看 V{versionNumber} 完整规则 →</Link></div>;
 }
@@ -17,12 +21,17 @@ export function QualityStandardPage() {
 
   async function refresh(preferredId?: string) {
     const list = await listQualityStandards();
-    setItems(list);
-    const id = preferredId || selected?.id || list[0]?.id;
+    const visibleItems = visibleQualityStandards(list);
+    setItems(visibleItems);
+    const candidateId = preferredId || selected?.id;
+    const id = visibleItems.some((item) => item.id === candidateId) ? candidateId : visibleItems[0]?.id;
     if (id) {
       const detail = await getQualityStandard(id);
       setSelected(detail);
       setRules(detail.draft?.rules ?? null);
+    } else {
+      setSelected(null);
+      setRules(null);
     }
   }
   useEffect(() => { void refresh().catch((reason) => setError(reason instanceof Error ? reason.message : "标准列表加载失败")); }, []);
