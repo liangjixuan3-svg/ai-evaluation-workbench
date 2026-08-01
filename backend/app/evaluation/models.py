@@ -61,6 +61,7 @@ class PromptVersion(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class RuleVersion(Base):
