@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
+from app.quality_standards.documents import MAX_DOCUMENT_SIZE
 from app.quality_standards.service import (
     PublishedStandardError,
     QualityStandardError,
@@ -25,7 +26,7 @@ async def upload_standard(
     file: Annotated[UploadFile, File()], session: Annotated[Session, Depends(get_session)]
 ) -> dict[str, Any]:
     try:
-        content = await file.read()
+        content = await _read_limited(file)
         standard = create_standard(
             session, settings.quality_standard_storage_dir, file.filename or "", content
         )
@@ -69,3 +70,14 @@ def remove_standard(
     except PublishedStandardError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _read_limited(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(min(1024 * 1024, MAX_DOCUMENT_SIZE + 1 - size)):
+        chunks.append(chunk)
+        size += len(chunk)
+        if size > MAX_DOCUMENT_SIZE:
+            raise QualityStandardError("单个文件不能超过 20 MB，请拆分后再上传")
+    return b"".join(chunks)

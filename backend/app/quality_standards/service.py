@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.quality_standards.documents import extract_document
@@ -12,7 +13,12 @@ from app.quality_standards.models import (
     QualityStandardParseJob,
     QualityStandardVersion,
 )
-from app.quality_standards.storage import delete_document, store_document
+from app.quality_standards.storage import (
+    delete_document,
+    read_document,
+    restore_document,
+    store_document,
+)
 
 
 class QualityStandardError(ValueError):
@@ -30,39 +36,35 @@ def create_standard(
     if not safe_filename:
         raise QualityStandardError("文件名不能为空")
     extracted = extract_document(safe_filename, content)
-    existing = session.scalar(
-        select(QualityStandard)
-        .join(QualityStandardVersion)
-        .where(QualityStandardVersion.source_sha256 == extracted.sha256)
-        .options(
-            selectinload(QualityStandard.versions),
-            selectinload(QualityStandard.parse_jobs),
-        )
-    )
+    existing = _standard_by_hash(session, extracted.sha256)
     if existing is not None:
         return existing
 
     path, created = store_document(storage_dir, extracted.sha256, Path(safe_filename).suffix, content)
-    standard = QualityStandard(name=Path(safe_filename).stem[:128], status="draft")
-    standard.versions.append(
-        QualityStandardVersion(
-            version_number=1,
-            source_filename=safe_filename,
-            source_sha256=extracted.sha256,
-            source_path=str(path),
-            rules=_initial_rules(),
-        )
-    )
-    standard.parse_jobs.append(QualityStandardParseJob(status="queued"))
-    session.add(standard)
+    base_name = Path(safe_filename).stem[:128]
+    name = _available_name(session, base_name, extracted.sha256)
     try:
-        session.commit()
+        return _persist_standard(session, name, safe_filename, extracted.sha256, path)
+    except IntegrityError:
+        session.rollback()
+        existing = _standard_by_hash(session, extracted.sha256)
+        if existing is not None:
+            return existing
+        retry_name = f"{base_name[:119]}-{extracted.sha256[:8]}"
+        try:
+            return _persist_standard(
+                session, retry_name, safe_filename, extracted.sha256, path
+            )
+        except Exception:
+            session.rollback()
+            if created:
+                delete_document(path, storage_dir)
+            raise
     except Exception:
         session.rollback()
         if created:
             delete_document(path, storage_dir)
         raise
-    return standard
 
 
 def list_standards(session: Session) -> list[QualityStandard]:
@@ -95,11 +97,22 @@ def delete_standard(session: Session, storage_dir: Path, standard_id: str) -> No
         version.published_at is not None for version in standard.versions
     ):
         raise PublishedStandardError("已发布的质量标准不能删除")
-    paths = [Path(version.source_path) for version in standard.versions]
-    session.delete(standard)
-    session.commit()
-    for path in paths:
-        delete_document(path, storage_dir)
+    backups = [
+        (Path(version.source_path), read_document(Path(version.source_path), storage_dir))
+        for version in standard.versions
+    ]
+    deleted: list[tuple[Path, bytes]] = []
+    try:
+        for path, content in backups:
+            delete_document(path, storage_dir)
+            deleted.append((path, content))
+        session.delete(standard)
+        session.commit()
+    except Exception:
+        session.rollback()
+        for path, content in deleted:
+            restore_document(path, content)
+        raise
 
 
 def standard_payload(standard: QualityStandard) -> dict[str, Any]:
@@ -133,6 +146,45 @@ def _version_payload(version: QualityStandardVersion) -> dict[str, Any]:
         "rules": version.rules,
         "published_at": version.published_at.isoformat() if version.published_at else None,
     }
+
+
+def _standard_by_hash(session: Session, file_hash: str) -> QualityStandard | None:
+    return session.scalar(
+        select(QualityStandard)
+        .join(QualityStandardVersion)
+        .where(QualityStandardVersion.source_sha256 == file_hash)
+        .options(
+            selectinload(QualityStandard.versions),
+            selectinload(QualityStandard.parse_jobs),
+        )
+    )
+
+
+def _available_name(session: Session, base_name: str, file_hash: str) -> str:
+    exists = session.scalar(select(QualityStandard.id).where(QualityStandard.name == base_name))
+    if exists is None:
+        return base_name
+    return f"{base_name[:119]}-{file_hash[:8]}"
+
+
+def _persist_standard(
+    session: Session, name: str, filename: str, file_hash: str, path: Path
+) -> QualityStandard:
+    standard = QualityStandard(name=name, status="draft")
+    standard.versions.append(
+        QualityStandardVersion(
+            version_number=1,
+            source_filename=filename,
+            source_sha256=file_hash,
+            upload_dedup_key=file_hash,
+            source_path=str(path),
+            rules=_initial_rules(),
+        )
+    )
+    standard.parse_jobs.append(QualityStandardParseJob(status="queued"))
+    session.add(standard)
+    session.commit()
+    return standard
 
 
 def _initial_rules() -> dict[str, Any]:

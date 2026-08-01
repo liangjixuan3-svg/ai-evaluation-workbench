@@ -19,6 +19,7 @@ from app.quality_standards.models import (
     QualityStandardParseJob,
     QualityStandardVersion,
 )
+from app.quality_standards.storage import delete_document
 
 
 def _docx_bytes(text: str = "客服回复必须准确且完整。") -> bytes:
@@ -122,6 +123,27 @@ def test_list_detail_and_delete_draft_cleanup_file(
         assert session.scalar(select(func.count()).select_from(QualityStandard)) == 0
 
 
+def test_same_filename_with_different_content_gets_a_distinct_name(
+    api: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, _ = api
+
+    first = client.post(
+        "/api/quality-standards",
+        files={"file": ("客服标准.docx", _docx_bytes("第一版"), "application/octet-stream")},
+    )
+    second = client.post(
+        "/api/quality-standards",
+        files={"file": ("客服标准.docx", _docx_bytes("第二版"), "application/octet-stream")},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["name"] == "客服标准"
+    assert second.json()["name"].startswith("客服标准-")
+
+
 def test_delete_published_standard_returns_conflict_and_preserves_file(
     api: tuple[TestClient, sessionmaker[Session]],
 ) -> None:
@@ -210,3 +232,50 @@ def test_database_failure_removes_new_file_and_rolls_back_rows(
     assert session.scalar(select(func.count()).select_from(QualityStandard)) == 0
     session.close()
     engine.dispose()
+
+
+def test_file_delete_failure_preserves_database_and_file(
+    api: tuple[TestClient, sessionmaker[Session]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, sessions = api
+    uploaded = client.post(
+        "/api/quality-standards",
+        files={"file": ("standard.docx", _docx_bytes(), "application/octet-stream")},
+    ).json()
+
+    def fail_delete(path: Path, storage_dir: Path) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("app.quality_standards.service.delete_document", fail_delete)
+    response = client.delete(f"/api/quality-standards/{uploaded['id']}")
+
+    assert response.status_code == 500
+    with sessions() as session:
+        assert session.get(QualityStandard, uploaded["id"]) is not None
+    assert any(settings.quality_standard_storage_dir.rglob("*"))
+
+
+def test_delete_document_rejects_paths_outside_storage(tmp_path: Path) -> None:
+    storage_dir = tmp_path / "standards"
+    storage_dir.mkdir()
+    outside = tmp_path / "outside.docx"
+    outside.write_bytes(b"keep")
+
+    with pytest.raises(ValueError, match="不在质量标准存储目录"):
+        delete_document(outside, storage_dir)
+
+    assert outside.read_bytes() == b"keep"
+
+
+def test_delete_document_rejects_symlink_escape(tmp_path: Path) -> None:
+    storage_dir = tmp_path / "standards"
+    storage_dir.mkdir()
+    outside = tmp_path / "outside.docx"
+    outside.write_bytes(b"keep")
+    symlink = storage_dir / "linked.docx"
+    symlink.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="不在质量标准存储目录"):
+        delete_document(symlink, storage_dir)
+
+    assert outside.read_bytes() == b"keep"

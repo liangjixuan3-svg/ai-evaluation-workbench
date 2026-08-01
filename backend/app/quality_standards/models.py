@@ -51,6 +51,7 @@ class QualityStandardVersion(Base):
     __tablename__ = "quality_standard_versions"
     __table_args__ = (
         UniqueConstraint("standard_id", "version_number", name="uq_quality_standard_version"),
+        UniqueConstraint("upload_dedup_key", name="uq_quality_standard_version_upload_dedup_key"),
         MYSQL_TABLE_ARGS,
     )
 
@@ -63,6 +64,7 @@ class QualityStandardVersion(Base):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    upload_dedup_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_path: Mapped[str] = mapped_column(String(512), nullable=False)
     rules: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

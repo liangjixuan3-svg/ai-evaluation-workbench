@@ -22,6 +22,7 @@ def test_quality_standard_schema_is_mysql_native() -> None:
                 "version_number",
                 "source_filename",
                 "source_sha256",
+                "upload_dedup_key",
                 "source_path",
                 "rules",
                 "published_at",
@@ -76,6 +77,11 @@ def test_quality_standard_schema_is_mysql_native() -> None:
         assert any(
             item["name"] == "uq_quality_standard_version"
             and item["column_names"] == ["standard_id", "version_number"]
+            for item in version_constraints
+        )
+        assert any(
+            item["name"] == "uq_quality_standard_version_upload_dedup_key"
+            and item["column_names"] == ["upload_dedup_key"]
             for item in version_constraints
         )
 
