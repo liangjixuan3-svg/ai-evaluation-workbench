@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("target_count", sa.Integer(), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("created_at", app.shared.types.UTCDateTime(), nullable=False),
+        sa.Column("completed_at", app.shared.types.UTCDateTime(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("batch_date", name="uq_calibration_batch_date"),
         sa.CheckConstraint("target_count BETWEEN 1 AND 20", name="ck_calibration_batch_target_count"),
@@ -74,8 +75,14 @@ def upgrade() -> None:
             name="ck_calibration_review_state",
         ),
         sa.CheckConstraint(
-            "review_basis IS NULL OR length(review_basis) <= 1000",
+            "review_basis IS NULL OR CHAR_LENGTH(review_basis) <= 1000",
             name="ck_calibration_review_basis_length",
+        ),
+        sa.CheckConstraint(
+            "disagreement_dimension IS NULL OR disagreement_dimension IN "
+            "('correctness', 'completeness', 'relevance', 'service_experience', "
+            "'compliance', 'other')",
+            name="ck_calibration_review_dimension",
         ),
         mysql_charset="utf8mb4",
         mysql_engine="InnoDB",

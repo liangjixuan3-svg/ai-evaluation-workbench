@@ -1,6 +1,11 @@
 export type CalibrationFilter = "pending" | "reviewed" | "all";
 export type CalibrationReviewStatus = "pending" | "agreed" | "corrected";
-export type CalibrationDimension = "correctness" | "completeness" | "compliance" | "tone";
+export type CalibrationDimension = "correctness" | "completeness" | "relevance" | "service_experience" | "compliance" | "other";
+
+export interface CalibrationDataSource {
+  name: string;
+  kind: string;
+}
 
 export interface CalibrationBatchSummary {
   id: string;
@@ -25,6 +30,7 @@ export interface CalibrationReviewResult {
 }
 
 export interface CalibrationWorkspaceItem extends CalibrationReviewResult {
+  data_source: CalibrationDataSource;
   scenario: string | null;
   total_score: number;
   passed: boolean;
@@ -43,8 +49,9 @@ export interface CalibrationWorkspace {
   items: CalibrationWorkspaceItem[];
 }
 
-export interface CalibrationReviewDetail extends CalibrationWorkspaceItem {
+export interface CalibrationReviewDetail extends CalibrationReviewResult {
   batch: CalibrationBatchSummary | null;
+  data_source: CalibrationDataSource;
   conversation: {
     id: string;
     external_id: string;
@@ -58,7 +65,7 @@ export interface CalibrationReviewDetail extends CalibrationWorkspaceItem {
     passed: boolean;
     confidence: "high" | "medium" | "low";
     reason: string;
-    evidence: string[];
+    evidence: unknown[];
     severe_factual_error: boolean;
     severe_compliance_error: boolean;
   };

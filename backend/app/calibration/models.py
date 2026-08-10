@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CHAR,
@@ -12,7 +13,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.shared.enums import (
@@ -22,6 +23,9 @@ from app.shared.enums import (
     CalibrationSelectionReason,
 )
 from app.shared.types import MYSQL_TABLE_ARGS, UTCDateTime, enum_type, utc_now, uuid_primary_key
+
+if TYPE_CHECKING:
+    from app.evaluation.models import EvaluationResult
 
 
 class CalibrationBatch(Base):
@@ -39,6 +43,7 @@ class CalibrationBatch(Base):
         enum_type(CalibrationBatchStatus), default=CalibrationBatchStatus.OPEN, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class CalibrationReview(Base):
@@ -63,8 +68,15 @@ class CalibrationReview(Base):
             name="ck_calibration_review_state",
         ),
         CheckConstraint(
+            # SQLite length() counts characters. Migration 0011 uses MySQL CHAR_LENGTH().
             "review_basis IS NULL OR length(review_basis) <= 1000",
             name="ck_calibration_review_basis_length",
+        ),
+        CheckConstraint(
+            "disagreement_dimension IS NULL OR disagreement_dimension IN "
+            "('correctness', 'completeness', 'relevance', 'service_experience', "
+            "'compliance', 'other')",
+            name="ck_calibration_review_dimension",
         ),
         MYSQL_TABLE_ARGS,
     )
@@ -94,3 +106,5 @@ class CalibrationReview(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     include_in_regression: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+
+    evaluation_result: Mapped[EvaluationResult] = relationship()

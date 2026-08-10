@@ -101,5 +101,7 @@ class CalibrationSelectionReason(StrEnum):
 class CalibrationDimension(StrEnum):
     CORRECTNESS = "correctness"
     COMPLETENESS = "completeness"
+    RELEVANCE = "relevance"
+    SERVICE_EXPERIENCE = "service_experience"
     COMPLIANCE = "compliance"
-    TONE = "tone"
+    OTHER = "other"

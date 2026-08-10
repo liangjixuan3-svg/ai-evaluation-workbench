@@ -95,6 +95,43 @@ def test_calibration_models_keep_original_result_reference(
     assert review.evaluation_result_id == result.id
 
 
+def test_calibration_dimensions_match_the_five_dimension_contract() -> None:
+    assert [dimension.value for dimension in CalibrationDimension] == [
+        "correctness",
+        "completeness",
+        "relevance",
+        "service_experience",
+        "compliance",
+        "other",
+    ]
+
+
+def test_sqlite_model_accepts_one_thousand_chinese_characters(
+    session: Session, result: EvaluationResult
+) -> None:
+    batch = CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20)
+    session.add(batch)
+    session.flush()
+    review = CalibrationReview(
+        batch_id=batch.id,
+        evaluation_result_id=result.id,
+        selection_reason=CalibrationSelectionReason.LOW_CONFIDENCE,
+        status=CalibrationReviewStatus.CORRECTED,
+        agreed=False,
+        corrected_passed=True,
+        disagreement_dimension=CalibrationDimension.CORRECTNESS,
+        review_basis="中" * 1000,
+        reviewed_by="审核人",
+        reviewed_at=datetime(2026, 8, 10, tzinfo=UTC),
+        include_in_regression=True,
+    )
+    session.add(review)
+
+    session.flush()
+
+    assert len(review.review_basis or "") == 1000
+
+
 def test_calibration_batch_date_is_unique(session: Session) -> None:
     session.add(CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20))
     session.commit()

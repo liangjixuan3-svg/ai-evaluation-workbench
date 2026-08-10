@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 
-import { agreeCalibration, disagreeCalibration, ensureTodayCalibrationBatch, getCalibrationReview, getCalibrationWorkspace, type CalibrationDimension, type CalibrationFilter, type CalibrationReviewDetail, type CalibrationWorkspace, type CalibrationWorkspaceItem } from "../../app/calibrationApi";
+import { agreeCalibration, disagreeCalibration, ensureTodayCalibrationBatch, getCalibrationReview, getCalibrationWorkspace, type CalibrationDataSource, type CalibrationDimension, type CalibrationFilter, type CalibrationReviewDetail, type CalibrationWorkspace, type CalibrationWorkspaceItem } from "../../app/calibrationApi";
 import { CalibrationWorkspaceController, ensureTodayOnce } from "./calibrationWorkspaceController";
 
-const DIMENSIONS: CalibrationDimension[] = ["correctness", "completeness", "compliance", "tone"];
+const DIMENSIONS: CalibrationDimension[] = ["correctness", "completeness", "relevance", "service_experience", "compliance", "other"];
 
 const DIMENSION_LABELS: Record<CalibrationDimension, string> = {
   correctness: "准确性",
   completeness: "完整性",
+  relevance: "相关性",
+  service_experience: "服务体验",
   compliance: "合规性",
-  tone: "服务体验",
+  other: "其他",
 };
 
 const SELECTION_LABELS = {
@@ -19,8 +21,24 @@ const SELECTION_LABELS = {
   random_sample: "随机抽样",
 };
 
-export function calibrationDimensionLabel(value: CalibrationDimension | null): string {
-  return value ? DIMENSION_LABELS[value] : "暂无";
+export function calibrationDimensionLabel(value: string | null): string {
+  return value ? DIMENSION_LABELS[value as CalibrationDimension] ?? value : "暂无";
+}
+
+const DEMO_SOURCE_KINDS = new Set(["simulated", "demo", "test", "sample"]);
+
+function dataSourceLabel(dataSource: CalibrationDataSource): string {
+  const category = DEMO_SOURCE_KINDS.has(dataSource.kind.trim().toLowerCase()) ? "演示数据" : "真实数据";
+  return `${category} · ${dataSource.name}（${dataSource.kind}）`;
+}
+
+export function formatCalibrationEvidence(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "无法展示该证据";
+  } catch {
+    return "无法展示该证据";
+  }
 }
 
 function selectionLabel(value: CalibrationWorkspaceItem["selection_reason"]): string {
@@ -63,6 +81,9 @@ export function CalibrationWorkspaceView(props: CalibrationWorkspaceViewProps) {
   const canDisagree = Boolean(props.actor.trim()) && props.correctedPassed !== null && Boolean(props.disagreementDimension) && Boolean(props.reviewBasis.trim());
   const isPending = detail?.status === "pending";
   const filterLabels: Record<CalibrationFilter, string> = { pending: "待复核", reviewed: "已复核", all: "全部" };
+  const noCandidates = workspace.summary.total === 0;
+  const emptyTitle = noCandidates ? "今日无可复核案例" : workspace.summary.pending === 0 ? "今日复核已完成" : "当前筛选下没有校准任务";
+  const emptyDescription = noCandidates ? "最近 7 天暂无可复核结果，请先完成真实评测。" : workspace.summary.pending === 0 ? "明天首次进入时，系统会准备新的待复核案例。" : "切换筛选可查看其他状态的校准任务。";
   return <section className="operation-page calibration-page">
     <header className="operation-hero"><div><span className="eyebrow">EVALUATION CALIBRATION</span><h1>评测校准</h1></div><p>核对模型判定是否可靠；不认同的案例会固定为回归案例，帮助后续规则和 Prompt 迭代。</p></header>
     <section className="calibration-summary" aria-label="今日校准概况">
@@ -74,10 +95,10 @@ export function CalibrationWorkspaceView(props: CalibrationWorkspaceViewProps) {
     <nav className="calibration-filter" aria-label="校准队列筛选"><span>复核队列</span>{(["pending", "reviewed", "all"] as CalibrationFilter[]).map((status) => <button aria-pressed={props.status === status} className={props.status === status ? "active" : ""} key={status} onClick={() => props.onStatusChange(status)}>{filterLabels[status]}</button>)}</nav>
     {workspace.items.length ? <div className="calibration-layout">
       <aside className="calibration-queue" aria-label="校准任务列表">{workspace.items.map((item, index) => <button aria-current={props.selectedId === item.review_id ? "true" : undefined} className={props.selectedId === item.review_id ? "active" : ""} key={item.review_id} onClick={() => props.onSelect(item)}>
-        <span className={`calibration-status ${item.status}`}>{item.status === "pending" ? "待复核" : "已复核"}</span><small>{String(index + 1).padStart(2, "0")} · {selectionLabel(item.selection_reason)}</small><strong>{item.scenario || "未分类场景"}</strong><p>模型 {item.total_score} 分 · {item.passed ? "通过" : "不通过"}</p><footer><span>{item.confidence === "low" ? "低置信度" : item.confidence === "medium" ? "中置信度" : "高置信度"}</span><b>{item.include_in_regression ? "回归案例" : selectionLabel(item.selection_reason)}</b></footer>
+        <span className={`calibration-status ${item.status}`}>{item.status === "pending" ? "待复核" : "已复核"}</span><small>{String(index + 1).padStart(2, "0")} · {selectionLabel(item.selection_reason)}</small><strong>{item.scenario || "未分类场景"}</strong><p>模型 {item.total_score} 分 · {item.passed ? "通过" : "不通过"}</p><small>{dataSourceLabel(item.data_source)}</small><footer><span>{item.confidence === "low" ? "低置信度" : item.confidence === "medium" ? "中置信度" : "高置信度"}</span><b>{item.include_in_regression ? "回归案例" : selectionLabel(item.selection_reason)}</b></footer>
       </button>)}</aside>
       {detail ? <CalibrationDetailView {...props} detail={detail} canDisagree={canDisagree} isPending={isPending} /> : <div className="calibration-detail-empty" aria-live="polite">{props.detailLoading ? "正在加载校准详情…" : props.selectedId ? "校准详情暂时无法加载" : "请选择一个校准任务"}</div>}
-    </div> : <div className="calibration-empty"><span>00</span><h2>{workspace.summary.pending === 0 ? "今日复核已完成" : "当前筛选下没有校准任务"}</h2><p>{workspace.summary.pending === 0 ? "明天首次进入时，系统会准备新的待复核案例。" : "切换筛选可查看其他状态的校准任务。"}</p></div>}
+    </div> : <div className="calibration-empty"><span>00</span><h2>{emptyTitle}</h2><p>{emptyDescription}</p></div>}
     {props.error && <div className="operation-error" role="alert">{props.error}</div>}
   </section>;
 }
@@ -87,11 +108,11 @@ function CalibrationDetailView(props: CalibrationWorkspaceViewProps & { detail: 
   useEffect(() => { if (props.showAgreeConfirmation) confirmButtonRef.current?.focus(); }, [props.showAgreeConfirmation]);
   const { detail } = props;
   return <article className="calibration-detail" aria-label="校准详情">
-    <header className="calibration-detail-head"><div><span>{selectionLabel(detail.selection_reason)} · {detail.status === "pending" ? "等待人工复核" : "复核已完成"}</span><h2>{detail.conversation.scenario || "未分类场景"}</h2><p>为什么进入复核：{selectionLabel(detail.selection_reason)}。案例编号 {detail.conversation.external_id}</p></div><div className="calibration-score"><strong>{detail.evaluation.total_score}</strong><small>模型总分</small></div></header>
+    <header className="calibration-detail-head"><div><span>{selectionLabel(detail.selection_reason)} · {detail.status === "pending" ? "等待人工复核" : "复核已完成"}</span><h2>{detail.conversation.scenario || "未分类场景"}</h2><p>为什么进入复核：{selectionLabel(detail.selection_reason)}。案例编号 {detail.conversation.external_id}</p><p>数据来源：{dataSourceLabel(detail.data_source)}</p></div><div className="calibration-score"><strong>{detail.evaluation.total_score}</strong><small>模型总分</small></div></header>
     <section className="calibration-section"><SectionTitle number="01" title="脱敏对话" description="仅展示已脱敏的完整对话内容" /><div className="calibration-transcript">{detail.conversation.messages.map((message, index) => <div className={message.role === "assistant" ? "assistant" : "user"} key={`${message.role}-${index}`}><span>{message.role === "assistant" ? "AI" : "用户"}</span><p>{message.content}</p></div>)}</div></section>
     <section className="calibration-section"><SectionTitle number="02" title="模型判定" description="原始模型结果不会被人工复核覆盖" /><div className="calibration-evaluation"><div><span>通过结论</span><strong>{detail.evaluation.passed ? "通过" : "不通过"}</strong></div><div><span>置信度</span><strong>{detail.evaluation.confidence === "low" ? "低" : detail.evaluation.confidence === "medium" ? "中" : "高"}</strong></div>{Object.entries(detail.evaluation.dimension_scores).map(([dimension, score]) => <div key={dimension}><span>{calibrationDimensionLabel(dimension as CalibrationDimension)}</span><strong>{score} 分</strong></div>)}</div></section>
-    <section className="calibration-section"><SectionTitle number="03" title="模型评测理由" description="核对理由、证据和严重错误标记后再作出判断" /><div className="calibration-reason"><p>{detail.evaluation.reason}</p>{detail.evaluation.evidence.length > 0 && <blockquote>{detail.evaluation.evidence.map((item) => <span key={item}>{item}</span>)}</blockquote>}<div>{detail.evaluation.severe_factual_error && <b>标记：严重事实错误</b>}{detail.evaluation.severe_compliance_error && <b>标记：严重合规错误</b>}{!detail.evaluation.severe_factual_error && !detail.evaluation.severe_compliance_error && <b>未标记严重错误</b>}</div></div></section>
-    <section className="calibration-section"><SectionTitle number="04" title="本次评测版本" description="用于判断的规则、Prompt 与模型均已锁定" /><dl className="calibration-versions"><div><dt>公司质量标准</dt><dd>{detail.locked_rule.quality_standard ? `V${detail.locked_rule.quality_standard.version_number}` : "未绑定"}</dd></div><div><dt>评测 Prompt</dt><dd>{detail.locked_rule.prompt.name} · {detail.locked_rule.prompt.version}</dd></div><div><dt>模型</dt><dd>{detail.locked_rule.model.provider} · {detail.locked_rule.model.model}</dd></div></dl></section>
+    <section className="calibration-section"><SectionTitle number="03" title="模型评测理由" description="核对理由、证据和严重错误标记后再作出判断" /><div className="calibration-reason"><p>{detail.evaluation.reason}</p>{detail.evaluation.evidence.length > 0 && <blockquote>{detail.evaluation.evidence.map((item, index) => <span key={`evidence-${index}`}>{formatCalibrationEvidence(item)}</span>)}</blockquote>}<div>{detail.evaluation.severe_factual_error && <b>标记：严重事实错误</b>}{detail.evaluation.severe_compliance_error && <b>标记：严重合规错误</b>}{!detail.evaluation.severe_factual_error && !detail.evaluation.severe_compliance_error && <b>未标记严重错误</b>}</div></div></section>
+    <section className="calibration-section"><SectionTitle number="04" title="本次评测版本" description="用于判断的规则、Prompt 与模型均已锁定" /><dl className="calibration-versions"><div><dt>公司质量标准</dt><dd>{detail.locked_rule.quality_standard ? `V${detail.locked_rule.quality_standard.version_number}` : "未绑定"}</dd></div><div><dt>评测 Prompt</dt><dd>{detail.locked_rule.prompt.name} · {detail.locked_rule.prompt.version}</dd></div><div><dt>模型</dt><dd>{detail.locked_rule.model.provider} · {detail.locked_rule.model.model}</dd></div><div><dt>数据来源</dt><dd>{dataSourceLabel(detail.data_source)}</dd></div></dl></section>
     <section className="calibration-section"><SectionTitle number="05" title={props.isPending ? "人工复核" : "人工复核结论"} description={props.isPending ? "请先填写审核人，再确认或修正模型判定" : "已复核案例只读保存，原始模型结果保持不变"} />
       {props.isPending ? <div className="calibration-actions"><label><span>审核人</span><input aria-label="审核人" maxLength={128} value={props.actor} placeholder="请输入审核人姓名" onChange={(event) => props.onActorChange(event.target.value)} /><small>{props.actor.length} / 128</small></label>{props.showAgreeConfirmation ? <div className="calibration-confirm" role="alertdialog" aria-modal="true" aria-labelledby="calibration-agree-title" aria-describedby="calibration-agree-description"><strong id="calibration-agree-title">确认认同模型判定？</strong><p id="calibration-agree-description">提交后该案例将锁定为只读，无法在此页面修改。</p><div><button className="secondary-button" onClick={() => props.onCancelAgree?.()}>返回检查</button><button className="primary-button" ref={confirmButtonRef} disabled={!props.actor.trim() || Boolean(props.busy)} onClick={props.onAgree}>{props.busy === "agree" ? "正在提交…" : "确认提交"}</button></div></div> : <div className="calibration-action-buttons"><button className="primary-button" disabled={!props.actor.trim() || Boolean(props.busy)} onClick={() => props.onRequestAgree?.()}>认同模型判定</button><button className="secondary-button" disabled={Boolean(props.busy)} onClick={() => props.onShowDisagreeFormChange(!props.showDisagreeForm)}>不认同</button></div>}
         {props.showDisagreeForm && <div className="calibration-disagree"><label><span>正确结论</span><select aria-label="正确结论" value={props.correctedPassed === null ? "" : String(props.correctedPassed)} onChange={(event) => props.onCorrectedPassedChange(event.target.value === "" ? null : event.target.value === "true")}><option value="">请选择正确结论</option><option value="true">通过</option><option value="false">不通过</option></select></label><label><span>主要分歧维度</span><select aria-label="主要分歧维度" value={props.disagreementDimension} onChange={(event) => props.onDisagreementDimensionChange(event.target.value as CalibrationDimension | "")}><option value="">请选择分歧维度</option>{DIMENSIONS.map((dimension) => <option value={dimension} key={dimension}>{calibrationDimensionLabel(dimension)}</option>)}</select></label><label className="wide"><span>人工依据</span><textarea value={props.reviewBasis} maxLength={1000} placeholder="说明违反或满足了哪条业务规则" onChange={(event) => props.onReviewBasisChange(event.target.value)} /></label><button className="danger-button" disabled={!props.canDisagree || Boolean(props.busy)} onClick={props.onDisagree}>{props.busy === "disagree" ? "正在提交…" : "提交修正结论"}</button></div>}
@@ -118,8 +139,10 @@ export function CalibrationWorkspacePage() {
   const [error, setError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const controllerRef = useRef(new CalibrationWorkspaceController());
+  const detailRef = useRef<CalibrationReviewDetail | null>(null);
 
   function applyDetail(value: CalibrationReviewDetail) {
+    detailRef.current = value;
     setDetail(value);
     setCorrectedPassed(null);
     setDisagreementDimension("");
@@ -129,6 +152,7 @@ export function CalibrationWorkspacePage() {
   }
 
   function clearDetail() {
+    detailRef.current = null;
     controllerRef.current.clearDetail();
     setSelectedId("");
     setDetail(null);
@@ -139,6 +163,7 @@ export function CalibrationWorkspacePage() {
 
   async function loadDetail(reviewId: string) {
     const generation = controllerRef.current.beginDetail(reviewId);
+    detailRef.current = null;
     setSelectedId(reviewId);
     setDetail(null);
     setDetailLoading(true);
@@ -158,15 +183,17 @@ export function CalibrationWorkspacePage() {
     }
   }
 
-  async function loadWorkspace(requestedStatus: CalibrationFilter, preferredId = "") {
+  async function loadWorkspace(requestedStatus: CalibrationFilter, preferredId = "", preserveDetail = false) {
     const generation = controllerRef.current.beginWorkspace(requestedStatus);
+    if (preserveDetail && preferredId) controllerRef.current.beginDetail(preferredId);
     try {
       const response = await getCalibrationWorkspace(requestedStatus);
       if (!controllerRef.current.isCurrentWorkspace(generation, requestedStatus)) return;
       setWorkspace(response);
       const retainedId = preferredId || controllerRef.current.selectedReviewId();
       const nextId = response.items.find((item) => item.review_id === retainedId)?.review_id ?? response.items[0]?.review_id ?? "";
-      if (nextId) await loadDetail(nextId);
+      if (preserveDetail && nextId === preferredId && detailRef.current?.review_id === nextId) setSelectedId(nextId);
+      else if (nextId) await loadDetail(nextId);
       else clearDetail();
     } catch (reason) {
       if (!controllerRef.current.isCurrentWorkspace(generation, requestedStatus)) return;
@@ -191,11 +218,14 @@ export function CalibrationWorkspacePage() {
 
   async function submit(kind: "agree" | "disagree") {
     if (!detail) return;
+    const submittedReviewId = detail.review_id;
     setBusy(kind); setError("");
     try {
-      if (kind === "agree") await agreeCalibration(detail.review_id, actor.trim());
-      else if (correctedPassed !== null && disagreementDimension) await disagreeCalibration(detail.review_id, { actor: actor.trim(), corrected_passed: correctedPassed, disagreement_dimension: disagreementDimension, review_basis: reviewBasis.trim() });
-      await loadWorkspace(controllerRef.current.currentStatus(), detail.review_id);
+      if (kind === "agree") await agreeCalibration(submittedReviewId, actor.trim());
+      else if (correctedPassed !== null && disagreementDimension) await disagreeCalibration(submittedReviewId, { actor: actor.trim(), corrected_passed: correctedPassed, disagreement_dimension: disagreementDimension, review_basis: reviewBasis.trim() });
+      const latestSelectedId = controllerRef.current.selectedReviewId();
+      const preserveLatest = Boolean(latestSelectedId && latestSelectedId !== submittedReviewId && detailRef.current?.review_id === latestSelectedId);
+      await loadWorkspace(controllerRef.current.currentStatus(), latestSelectedId || submittedReviewId, preserveLatest);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "复核提交失败"); }
     finally { setBusy(""); }
   }

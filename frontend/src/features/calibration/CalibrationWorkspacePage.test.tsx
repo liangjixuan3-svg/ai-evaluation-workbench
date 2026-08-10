@@ -22,7 +22,7 @@ const workspace: CalibrationWorkspace = {
   items: [{
     id: "review-1", review_id: "review-1", evaluation_result_id: "result-1", selection_reason: "low_confidence", status: "pending",
     agreed: null, corrected_passed: null, disagreement_dimension: null, review_basis: null, reviewed_by: null, reviewed_at: null,
-    include_in_regression: false, scenario: "退款进度查询", total_score: 62, passed: false, confidence: "low",
+    include_in_regression: false, data_source: { name: "客服演示样本", kind: "demo" }, scenario: "退款进度查询", total_score: 62, passed: false, confidence: "low",
   }],
 };
 
@@ -34,7 +34,7 @@ const detail: CalibrationReviewDetail = {
     messages: [{ role: "user", content: "退款什么时候到账？" }, { role: "assistant", content: "请耐心等待。" }],
   },
   evaluation: {
-    total_score: 62, dimension_scores: { correctness: 72, completeness: 45, compliance: 84, tone: 88 }, passed: false,
+    total_score: 62, dimension_scores: { correctness: 72, completeness: 45, relevance: 80, service_experience: 88, compliance: 84 }, passed: false,
     confidence: "low", reason: "未说明退款到账时效。", evidence: ["回复只要求用户等待。"],
     severe_factual_error: false, severe_compliance_error: false,
   },
@@ -432,6 +432,66 @@ describe("评测校准工作台", () => {
     expect(api.ensureTodayCalibrationBatch).toHaveBeenCalledTimes(1);
   });
 
+  it("提交 A 后选择 B 时不让 A 的迟到成功覆盖 B 详情与表单", async () => {
+    const itemA = workspaceItem("review-A", "场景 A");
+    const itemB = workspaceItem("review-B", "场景 B");
+    const submission = deferred<CalibrationReviewDetail>();
+    const refreshedWorkspace = deferred<CalibrationWorkspace>();
+    api.ensureTodayCalibrationBatch.mockResolvedValue(workspace.batch);
+    api.getCalibrationWorkspace
+      .mockResolvedValueOnce({ ...workspace, items: [itemA, itemB] })
+      .mockReturnValueOnce(refreshedWorkspace.promise);
+    api.getCalibrationReview
+      .mockResolvedValueOnce(reviewDetail(itemA, "case-A"))
+      .mockResolvedValueOnce(reviewDetail(itemB, "case-B"));
+    api.agreeCalibration.mockReturnValueOnce(submission.promise);
+
+    const container = await mountCalibration();
+    await flush();
+    await inputValue(findInput(container, "审核人")!, "A 审核人");
+    await click(container, "认同模型判定");
+    await click(container, "确认提交");
+    const buttonB = findButtonContaining(container, "场景 B");
+    expect(buttonB).not.toBeNull();
+    await act(async () => { buttonB!.dispatchEvent(new MiniEvent("click")); });
+    await flush();
+    expect(container.textContent).toContain("case-B");
+    await inputValue(findInput(container, "审核人")!, "B 审核人");
+
+    submission.resolve({ ...reviewDetail(itemA, "case-A"), status: "agreed", agreed: true });
+    await flush();
+    expect(api.getCalibrationWorkspace).toHaveBeenCalledTimes(2);
+    refreshedWorkspace.resolve({ ...workspace, items: [itemA, itemB] });
+    await flush();
+
+    expect(container.textContent).toContain("case-B");
+    expect(container.textContent).not.toContain("case-A");
+    expect(buttonB!.getAttribute("aria-current")).toBe("true");
+    expect(findInput(container, "审核人")!.value).toBe("B 审核人");
+    expect(api.getCalibrationReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("真实挂载嵌套 evidence 时不崩溃并显示可读中文", async () => {
+    const nestedDetail = {
+      ...detail,
+      evaluation: {
+        ...detail.evaluation,
+        evidence: ["原始中文证据", { 业务规则: ["需要说明到账时效"] }, ["数组证据"]],
+      },
+    } as CalibrationReviewDetail;
+    api.ensureTodayCalibrationBatch.mockResolvedValue(workspace.batch);
+    api.getCalibrationWorkspace.mockResolvedValue(workspace);
+    api.getCalibrationReview.mockResolvedValue(nestedDetail);
+
+    const container = await mountCalibration();
+    await flush();
+
+    expect(container.textContent).toContain("原始中文证据");
+    expect(container.textContent).toContain("业务规则");
+    expect(container.textContent).toContain("需要说明到账时效");
+    expect(container.textContent).toContain("数组证据");
+  });
+
   it("展示进度、待复核详情与双向复核入口", () => {
     const html = render();
 
@@ -446,16 +506,39 @@ describe("评测校准工作台", () => {
     expect(html).toContain("AI");
     expect(html).toContain("客服质量评测");
     expect(html).toContain("deepseek-chat");
+    expect(html).toContain("演示数据");
+    expect(html).toContain("客服演示样本");
+    expect(html).toContain("demo");
     expect(html).toContain("aria-pressed=\"true\"");
     expect(html).toContain("aria-current=\"true\"");
     expect(html).toContain("maxLength=\"128\"");
     expect(html).not.toContain("<main class=\"calibration-detail\"");
   });
 
-  it("在没有待复核任务时提示今日完成", () => {
+  it("在零候选批次中提示今日无可复核案例", () => {
+    const html = render({ workspace: { ...workspace, summary: { ...workspace.summary, reviewed: 0, total: 0, pending: 0 }, items: [] }, detail: null, selectedId: "" });
+
+    expect(html).toContain("今日无可复核案例");
+    expect(html).not.toContain("今日复核已完成");
+  });
+
+  it("在有案例且全部复核后提示今日完成", () => {
     const html = render({ workspace: { ...workspace, summary: { ...workspace.summary, pending: 0 }, items: [] }, detail: null, selectedId: "" });
 
     expect(html).toContain("今日复核已完成");
+  });
+
+  it("将非演示来源显示为真实数据并保留名称和种类", () => {
+    const realSource = { name: "生产客服导入", kind: "json_import" };
+    const realItem = { ...workspace.items[0], data_source: realSource };
+    const html = render({
+      workspace: { ...workspace, items: [realItem] },
+      detail: { ...detail, data_source: realSource },
+    });
+
+    expect(html).toContain("真实数据");
+    expect(html).toContain("生产客服导入");
+    expect(html).toContain("json_import");
   });
 
   it("将已复核结果展示为只读并标记回归案例", () => {
@@ -463,7 +546,11 @@ describe("评测校准工作台", () => {
       ...detail, status: "corrected", agreed: false, corrected_passed: true, disagreement_dimension: "completeness",
       review_basis: "人工确认已完整说明到账时效。", reviewed_by: "审核人", reviewed_at: "2026-08-10T09:00:00Z", include_in_regression: true,
     };
-    const html = render({ detail: reviewed, workspace: { ...workspace, items: [reviewed] } });
+    const reviewedItem = {
+      ...workspace.items[0], status: "corrected" as const, agreed: false, corrected_passed: true, disagreement_dimension: "completeness" as const,
+      review_basis: "人工确认已完整说明到账时效。", reviewed_by: "审核人", reviewed_at: "2026-08-10T09:00:00Z", include_in_regression: true,
+    };
+    const html = render({ detail: reviewed, workspace: { ...workspace, items: [reviewedItem] } });
 
     expect(html).toContain("人工复核结论");
     expect(html).toContain("人工判定通过");
@@ -471,7 +558,19 @@ describe("评测校准工作台", () => {
     expect(html).not.toContain("认同模型判定");
   });
 
-  it("使用中文展示分歧维度", () => {
-    expect(calibrationDimensionLabel("completeness")).toBe("完整性");
+  it("使用中文展示完整六个分歧维度且移除 tone", () => {
+    expect([
+      calibrationDimensionLabel("correctness"),
+      calibrationDimensionLabel("completeness"),
+      calibrationDimensionLabel("relevance"),
+      calibrationDimensionLabel("service_experience"),
+      calibrationDimensionLabel("compliance"),
+      calibrationDimensionLabel("other"),
+    ]).toEqual(["准确性", "完整性", "相关性", "服务体验", "合规性", "其他"]);
+    const html = render({ showDisagreeForm: true });
+    expect(html).toContain("value=\"relevance\"");
+    expect(html).toContain("value=\"service_experience\"");
+    expect(html).toContain("value=\"other\"");
+    expect(html).not.toContain("value=\"tone\"");
   });
 });

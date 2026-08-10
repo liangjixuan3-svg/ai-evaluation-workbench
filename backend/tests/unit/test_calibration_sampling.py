@@ -26,6 +26,7 @@ from app.evaluation.models import (
 from app.ingestion.models import Conversation, DataSource
 from app.quality_standards.models import QualityStandardVersion  # noqa: F401
 from app.shared.enums import (
+    CalibrationBatchStatus,
     CalibrationSelectionReason,
     Confidence,
     RunStatus,
@@ -205,6 +206,14 @@ def test_ensure_today_batch_creates_only_available_candidates(session: Session) 
     batch = ensure_today_batch(session, batch_date=TODAY)
 
     assert len(_reviews(session, batch)) == 3
+
+
+def test_ensure_today_batch_completes_an_empty_batch_immediately(session: Session) -> None:
+    batch = ensure_today_batch(session, batch_date=TODAY)
+
+    assert _reviews(session, batch) == []
+    assert batch.status is CalibrationBatchStatus.COMPLETED
+    assert batch.completed_at is not None
 
 
 def test_ensure_today_batch_excludes_old_incomplete_and_historical_results(session: Session) -> None:

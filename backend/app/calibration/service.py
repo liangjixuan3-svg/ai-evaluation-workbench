@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.calibration.contracts import DisagreeReviewInput
 from app.calibration.models import CalibrationBatch, CalibrationReview
 from app.evaluation.models import EvaluationResult, EvaluationRun
+from app.ingestion.models import Conversation
 from app.ingestion.redaction import redact_text
 from app.shared.enums import (
     CalibrationBatchStatus,
@@ -32,6 +34,14 @@ _PRIORITY_QUOTAS = (
     (CalibrationSelectionReason.SEVERE_ERROR, 4),
     (CalibrationSelectionReason.RANDOM_SAMPLE, 2),
 )
+_SENSITIVE_MODEL_PARAMETER_KEYS = {
+    "api_key",
+    "token",
+    "access_token",
+    "secret",
+    "password",
+    "authorization",
+}
 
 CalibrationWorkspaceStatus = Literal["pending", "reviewed", "all"]
 
@@ -69,6 +79,10 @@ def ensure_today_batch(
         id=new_uuid(),
         batch_date=business_date,
         target_count=target_count,
+        status=(
+            CalibrationBatchStatus.OPEN if selected else CalibrationBatchStatus.COMPLETED
+        ),
+        completed_at=utc_now() if not selected else None,
     )
     session.add(batch)
     session.add_all(
@@ -116,6 +130,11 @@ def calibration_workspace(
     reviews = list(
         session.scalars(
             select(CalibrationReview)
+            .options(
+                joinedload(CalibrationReview.evaluation_result)
+                .joinedload(EvaluationResult.conversation)
+                .joinedload(Conversation.data_source)
+            )
             .where(CalibrationReview.batch_id == batch.id)
             .order_by(CalibrationReview.created_at, CalibrationReview.id)
         )
@@ -151,25 +170,36 @@ def calibration_workspace(
             ),
             "top_disagreement_dimension": _top_disagreement_dimension(disagreements),
         },
-        "items": [_workspace_item(session, review) for review in displayed],
+        "items": [_workspace_item(review) for review in displayed],
     })
 
 
 def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any]:
-    review = session.get(CalibrationReview, review_id)
+    review = session.scalar(
+        select(CalibrationReview)
+        .options(
+            joinedload(CalibrationReview.evaluation_result)
+            .joinedload(EvaluationResult.conversation)
+            .joinedload(Conversation.data_source),
+            joinedload(CalibrationReview.evaluation_result)
+            .joinedload(EvaluationResult.run)
+            .joinedload(EvaluationRun.prompt_version),
+            joinedload(CalibrationReview.evaluation_result)
+            .joinedload(EvaluationResult.run)
+            .joinedload(EvaluationRun.quality_standard_version),
+        )
+        .where(CalibrationReview.id == review_id)
+    )
     if review is None:
         raise LookupError("calibration review does not exist")
-    result = session.get(EvaluationResult, review.evaluation_result_id)
-    if result is None:
-        raise LookupError("calibration review evaluation result does not exist")
-    run = session.get(EvaluationRun, result.run_id)
-    if run is None:
-        raise LookupError("calibration review evaluation run does not exist")
+    result = review.evaluation_result
+    run = result.run
     conversation = result.conversation
     quality_standard = run.quality_standard_version
     return _redact_json({
         **review_payload(review),
         "batch": _batch_payload(session.get(CalibrationBatch, review.batch_id)),
+        "data_source": _data_source_payload(conversation),
         "conversation": {
             "id": conversation.id,
             "external_id": conversation.external_id,
@@ -206,7 +236,7 @@ def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any
             "model": {
                 "provider": run.provider,
                 "model": run.model,
-                "parameters": run.model_parameters,
+                "parameters": _sanitize_model_parameters(run.model_parameters),
             },
         },
     })
@@ -324,18 +354,25 @@ def _complete_batch_when_fully_reviewed(session: Session, batch: CalibrationBatc
     )
     if pending_review is None:
         batch.status = CalibrationBatchStatus.COMPLETED
+        batch.completed_at = utc_now()
 
 
-def _workspace_item(session: Session, review: CalibrationReview) -> dict[str, Any]:
-    result = session.get(EvaluationResult, review.evaluation_result_id)
-    if result is None:
-        raise LookupError("calibration review evaluation result does not exist")
+def _workspace_item(review: CalibrationReview) -> dict[str, Any]:
+    result = review.evaluation_result
     return {
         **review_payload(review),
+        "data_source": _data_source_payload(result.conversation),
         "scenario": result.conversation.scenario,
         "total_score": float(result.total_score),
         "passed": result.passed,
         "confidence": result.confidence.value,
+    }
+
+
+def _data_source_payload(conversation: Conversation) -> dict[str, str]:
+    return {
+        "name": conversation.data_source.name,
+        "kind": conversation.data_source.kind,
     }
 
 
@@ -374,6 +411,22 @@ def _redact_json(value: Any) -> Any:
         return [_redact_json(item) for item in value]
     if isinstance(value, dict):
         return {key: _redact_json(item) for key, item in value.items()}
+    return value
+
+
+def _sanitize_model_parameters(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_model_parameters(item) for item in value]
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
+            sanitized[key] = (
+                "[REDACTED]"
+                if normalized_key in _SENSITIVE_MODEL_PARAMETER_KEYS
+                else _sanitize_model_parameters(item)
+            )
+        return sanitized
     return value
 
 

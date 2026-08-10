@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.calibration.contracts import AgreeReviewInput, DisagreeReviewInput
@@ -15,6 +16,26 @@ from app.calibration.service import (
 from app.db import get_session
 
 router = APIRouter(prefix="/api/calibration", tags=["calibration"])
+
+_REVIEW_CONSTRAINTS = {
+    "ck_calibration_review_basis_length",
+    "ck_calibration_review_dimension",
+    "ck_calibration_review_state",
+}
+
+
+def _review_constraint_detail(error: IntegrityError) -> str | None:
+    database_message = str(error.orig).casefold()
+    if any(name in database_message for name in _REVIEW_CONSTRAINTS):
+        return "人工复核内容不符合数据约束，请确认人工依据不超过 1000 字"
+    return None
+
+
+def _raise_review_constraint_error(error: IntegrityError) -> None:
+    detail = _review_constraint_detail(error)
+    if detail is None:
+        raise error
+    raise HTTPException(status_code=422, detail=detail) from error
 
 
 @router.post("/batches/today/ensure")
@@ -63,6 +84,8 @@ def agree_review(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except IntegrityError as error:
+        _raise_review_constraint_error(error)
 
 
 @router.post("/reviews/{review_id}/disagree")
@@ -77,3 +100,5 @@ def disagree_review(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except IntegrityError as error:
+        _raise_review_constraint_error(error)

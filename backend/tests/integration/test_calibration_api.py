@@ -6,11 +6,13 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.dialects import mysql
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.calibration import router as calibration_router
 from app.calibration import service as calibration_service
 from app.calibration.models import CalibrationBatch, CalibrationReview
 from app.db import Base, get_session
@@ -69,12 +71,22 @@ def test_calibration_workspace_and_detail_expose_locked_evaluation_without_sensi
         "top_disagreement_dimension": None,
     }
     assert payload["items"][0]["selection_reason"] == "low_confidence"
+    assert payload["items"][0]["data_source"] == {
+        "name": "calibration-api-source",
+        "kind": "test",
+    }
+    assert set(payload["items"][0]["data_source"]) == {"name", "kind"}
 
     review_id = payload["items"][0]["review_id"]
     detail = client.get(f"/api/calibration/reviews/{review_id}")
 
     assert detail.status_code == 200, detail.text
     detail_payload = detail.json()
+    assert detail_payload["data_source"] == {
+        "name": "calibration-api-source",
+        "kind": "test",
+    }
+    assert set(detail_payload["data_source"]) == {"name", "kind"}
     assert detail_payload["conversation"]["messages"][0]["content"] == "手机 [PHONE]"
     assert detail_payload["evaluation"] == {
         "total_score": 82.0,
@@ -100,12 +112,26 @@ def test_calibration_workspace_and_detail_expose_locked_evaluation_without_sensi
     assert detail_payload["locked_rule"]["model"] == {
         "provider": "seed-provider",
         "model": "seed-model-v1",
-        "parameters": {"temperature": 0},
+        "parameters": {
+            "temperature": 0,
+            "API-Key": "[REDACTED]",
+            "nested": [
+                {"token": "[REDACTED]", "access-token": "[REDACTED]"},
+                {
+                    "SECRET": "[REDACTED]",
+                    "password": "[REDACTED]",
+                    "Authorization": "[REDACTED]",
+                    "top_p": 0.8,
+                },
+            ],
+        },
     }
     transcript = str(detail_payload)
     assert "13800138000" not in transcript
     assert "linqiao@example.com" not in transcript
     assert "ORD-20260810-A1" not in transcript
+    assert "credential-value" not in transcript
+    assert "source-credential" not in transcript
     assert "[PHONE]" in transcript
     assert "[EMAIL]" in transcript
     assert "[ORDER_ID]" in transcript
@@ -127,16 +153,138 @@ def test_disagreement_basis_validates_the_trimmed_length(
 
     too_long_after_trim = client.post(
         f"/api/calibration/reviews/{review_id}/disagree",
-        json={**request, "review_basis": f" {'x' * 1001} "},
+        json={**request, "review_basis": f" {'中' * 1001} "},
     )
     accepted_after_trim = client.post(
         f"/api/calibration/reviews/{review_id}/disagree",
-        json={**request, "review_basis": f" {'x' * 1000} "},
+        json={**request, "review_basis": f" {'中' * 1000} "},
     )
 
     assert too_long_after_trim.status_code == 422
     assert accepted_after_trim.status_code == 200, accepted_after_trim.text
-    assert accepted_after_trim.json()["review_basis"] == "x" * 1000
+    assert accepted_after_trim.json()["review_basis"] == "中" * 1000
+
+
+def test_disagreement_dimensions_accept_the_product_contract_and_reject_tone(
+    calibration_client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, _ = calibration_client
+    assert client.post("/api/calibration/batches/today/ensure").status_code == 200
+    review_ids = [
+        item["review_id"]
+        for item in client.get("/api/calibration/workspace?status=all").json()["items"]
+    ]
+
+    for review_id, dimension in zip(
+        review_ids,
+        ("relevance", "service_experience", "other"),
+        strict=True,
+    ):
+        response = client.post(
+            f"/api/calibration/reviews/{review_id}/disagree",
+            json={
+                "actor": "林乔",
+                "corrected_passed": False,
+                "disagreement_dimension": dimension,
+                "review_basis": "人工复核确认分歧。",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["disagreement_dimension"] == dimension
+
+    rejected = client.post(
+        f"/api/calibration/reviews/{review_ids[0]}/disagree",
+        json={
+            "actor": "林乔",
+            "corrected_passed": False,
+            "disagreement_dimension": "tone",
+            "review_basis": "旧维度不再允许。",
+        },
+    )
+    assert rejected.status_code == 422
+
+
+def test_workspace_eager_loads_results_conversations_and_data_sources(
+    calibration_client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    client, sessions = calibration_client
+    assert client.post("/api/calibration/batches/today/ensure").status_code == 200
+    engine = sessions.kw["bind"]
+    statements: list[str] = []
+
+    def record_statement(*args) -> None:
+        statements.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        with sessions() as session:
+            payload = calibration_service.calibration_workspace(session, "all")
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert len(payload["items"]) == 3
+    assert {item["data_source"]["name"] for item in payload["items"]} == {
+        "calibration-api-source"
+    }
+    assert len(statements) == 2
+
+
+def test_recognized_review_constraint_error_is_chinese_422(
+    calibration_client: tuple[TestClient, sessionmaker[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = calibration_client
+    assert client.post("/api/calibration/batches/today/ensure").status_code == 200
+    review_id = client.get("/api/calibration/workspace?status=all").json()["items"][0][
+        "review_id"
+    ]
+
+    def reject_constraint(*args, **kwargs):
+        raise IntegrityError(
+            "UPDATE calibration_reviews",
+            {},
+            Exception("Check constraint 'ck_calibration_review_basis_length' is violated"),
+        )
+
+    monkeypatch.setattr(calibration_router, "disagree_with_evaluation", reject_constraint)
+    response = client.post(
+        f"/api/calibration/reviews/{review_id}/disagree",
+        json={
+            "actor": "林乔",
+            "corrected_passed": False,
+            "disagreement_dimension": "correctness",
+            "review_basis": "合法人工依据",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "人工复核内容不符合数据约束，请确认人工依据不超过 1000 字"}
+
+
+def test_database_connection_error_is_not_mapped_to_validation_error(
+    calibration_client: tuple[TestClient, sessionmaker[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = calibration_client
+    assert client.post("/api/calibration/batches/today/ensure").status_code == 200
+    review_id = client.get("/api/calibration/workspace?status=all").json()["items"][0][
+        "review_id"
+    ]
+
+    def lose_connection(*args, **kwargs):
+        raise OperationalError("UPDATE calibration_reviews", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(calibration_router, "disagree_with_evaluation", lose_connection)
+    with pytest.raises(OperationalError):
+        client.post(
+            f"/api/calibration/reviews/{review_id}/disagree",
+            json={
+                "actor": "林乔",
+                "corrected_passed": False,
+                "disagreement_dimension": "correctness",
+                "review_basis": "合法人工依据",
+            },
+        )
 
 
 def test_workspace_status_filters_do_not_change_the_full_batch_summary(
@@ -332,7 +480,11 @@ def _model_call_count(sessions: sessionmaker[Session]) -> int:
 
 def _seed_results(session: Session) -> None:
     now = datetime.now(UTC)
-    source = DataSource(name="calibration-api-source", kind="test")
+    source = DataSource(
+        name="calibration-api-source",
+        kind="test",
+        config={"authorization": "source-credential"},
+    )
     standard = QualityStandard(name="客服质量标准", status="published")
     standard_version = QualityStandardVersion(
         standard=standard,
@@ -364,7 +516,19 @@ def _seed_results(session: Session) -> None:
         quality_standard_version=standard_version,
         provider="seed-provider",
         model="seed-model-v1",
-        model_parameters={"temperature": 0},
+        model_parameters={
+            "temperature": 0,
+            "API-Key": "credential-value",
+            "nested": [
+                {"token": "credential-value", "access-token": "credential-value"},
+                {
+                    "SECRET": "credential-value",
+                    "password": "credential-value",
+                    "Authorization": "credential-value",
+                    "top_p": 0.8,
+                },
+            ],
+        },
         status=RunStatus.SUCCEEDED,
         completed_at=now,
     )
