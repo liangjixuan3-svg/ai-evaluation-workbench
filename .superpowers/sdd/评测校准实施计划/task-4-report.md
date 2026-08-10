@@ -22,3 +22,10 @@
 
 - 未启动服务或进行浏览器手测，符合任务约束；验证范围为静态渲染、API 请求封装和生产构建。
 - 后端当前校准维度枚举为准确性、完整性、合规性和服务体验（`tone`）；页面严格使用该接口允许的集合。
+
+## Fix Round 1
+
+- 使用结算后清空的模块级 ensure promise，StrictMode 重放共享同一请求，失败后可再次发起。
+- workspace 与 detail 均使用 latest generation 和 latest status/selection refs；切换时清空旧详情，过期响应不再覆盖当前选择，提交完成按最新筛选刷新。
+- 补充真实 StrictMode 挂载测试，验证 ensure 仅一次且在成功后才查询 pending；静态测试补充可访问性与审核人长度约束。
+- 审核人输入限制为 128 字符，标准后端长度校验映射为中文；详情 landmark 改为 article，筛选和队列增加状态语义，确认区使用 alertdialog 并在打开后聚焦确认按钮。

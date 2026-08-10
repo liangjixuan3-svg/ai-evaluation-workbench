@@ -47,10 +47,12 @@ describe("评测校准 API", () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "该复核已完成" }), { status: 422 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: "依据不能为空" }, { msg: "审核人不能为空" }] }), { status: 422 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: "Value error, actor is required" }] }), { status: 422 })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: "Value error, actor is required" }] }), { status: 422 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: [{ msg: "String should have at most 128 characters" }] }), { status: 422 })));
 
     await expect(ensureTodayCalibrationBatch()).rejects.toThrow("该复核已完成");
     await expect(getCalibrationWorkspace("all")).rejects.toThrow("依据不能为空；审核人不能为空");
     await expect(getCalibrationReview("review-1")).rejects.toThrow("审核人不能为空");
+    await expect(agreeCalibration("review-1", "x")).rejects.toThrow("审核人不能超过 128 个字符");
   });
 });

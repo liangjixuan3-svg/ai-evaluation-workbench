@@ -91,6 +91,7 @@ function errorDetail(detail: unknown): string | null {
 
 function validationMessage(message: string): string {
   if (message.includes("actor is required")) return "审核人不能为空";
+  if (message.includes("at most 128 characters") || message.includes("max_length")) return "审核人不能超过 128 个字符";
   if (message.includes("review_basis is required")) return "人工依据不能为空";
   if (message.includes("review_basis must be at most 1000")) return "人工依据不能超过 1000 字";
   return message;
