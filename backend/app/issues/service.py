@@ -83,6 +83,7 @@ def _cluster_row(
     suggestion = _latest_suggestion(session, cluster.id)
     alert = _cluster_alert(session, members)
     confirmed = bool(members) and all(member.confirmed_root_cause is not None for member in members)
+    confirmed_root_cause = _confirmed_root_cause(members) if confirmed else None
     return {
         "id": cluster.id,
         "run_id": cluster.run_id,
@@ -92,6 +93,7 @@ def _cluster_row(
         "impact_count": len(members),
         "priority": alert.priority if alert else "P2",
         "status": "confirmed" if confirmed else "pending",
+        "confirmed_root_cause": confirmed_root_cause,
         "suggestion": (
             {
                 "root_cause": suggestion.root_cause.value,
@@ -201,8 +203,15 @@ def _alert_payload(alert: Alert | None) -> dict[str, Any] | None:
 
 
 def _displayed_root_cause(row: dict[str, Any]) -> str | None:
+    if row["confirmed_root_cause"]:
+        return row["confirmed_root_cause"]
     suggestion = row["suggestion"]
     return suggestion["root_cause"] if suggestion else None
+
+
+def _confirmed_root_cause(members: list[ClusterMember]) -> str:
+    causes = {member.confirmed_root_cause for member in members}
+    return next(iter(causes)).value if len(causes) == 1 else "mixed"
 
 
 def _priority_rank(priority: str) -> int:

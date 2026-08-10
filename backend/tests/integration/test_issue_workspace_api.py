@@ -94,6 +94,7 @@ def test_issue_list_returns_real_cluster_summary(issue_client: tuple[TestClient,
             "impact_count": 2,
             "priority": "P1",
             "status": "pending",
+            "confirmed_root_cause": None,
             "suggestion": {
                 "root_cause": "missing_knowledge",
                 "confidence": "medium",
@@ -171,6 +172,7 @@ def test_explicit_cluster_confirmation_routes_one_task(
     first = client.post(f"/api/badcases/{cluster_id}/confirm-attribution", json=body)
     replay = client.post(f"/api/badcases/{cluster_id}/confirm-attribution", json=body)
     detail = client.get(f"/api/issues/{cluster_id}").json()
+    issue_list = client.get("/api/issues?status=confirmed").json()
 
     assert first.status_code == 200
     assert replay.status_code == 200
@@ -179,6 +181,29 @@ def test_explicit_cluster_confirmation_routes_one_task(
     assert detail["status"] == "confirmed"
     assert detail["confirmation"]["root_cause"] == "missing_knowledge"
     assert detail["task"]["id"] == first.json()["id"]
+    assert issue_list["items"][0]["confirmed_root_cause"] == "missing_knowledge"
+    assert issue_list["summary"]["missing_knowledge_count"] == 1
+
+
+def test_confirmed_root_cause_overrides_ai_suggestion_in_issue_list(
+    issue_client: tuple[TestClient, str],
+) -> None:
+    client, cluster_id = issue_client
+
+    response = client.post(
+        f"/api/badcases/{cluster_id}/confirm-attribution",
+        json={
+            "actor": "林乔",
+            "root_cause": "misunderstanding",
+            "evidence": ["人工复核后确认知识已存在，是模型没有理解问题"],
+            "confirm_cluster": True,
+        },
+    )
+    issue_list = client.get("/api/issues?status=confirmed").json()
+
+    assert response.status_code == 200
+    assert issue_list["items"][0]["confirmed_root_cause"] == "misunderstanding"
+    assert issue_list["summary"]["missing_knowledge_count"] == 0
 
 
 def _seed_issue(session: Session) -> str:

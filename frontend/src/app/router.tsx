@@ -4,6 +4,7 @@ import { AppShell } from "../components/AppShell";
 import { NewEvaluationPage } from "../features/evaluations/NewEvaluationPage";
 import { RunDetailPage } from "../features/evaluations/RunDetailPage";
 import { ImportPage } from "../features/imports/ImportPage";
+import { IssueWorkspacePage } from "../features/issues/IssueWorkspacePage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
 import { QualityStandardPage } from "../features/rules/QualityStandardPage";
 import { QualityStandardVersionPage } from "../features/rules/QualityStandardVersionPage";
@@ -25,7 +26,7 @@ export function AppRouter() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<WorkbenchPage />} />
-        <Route path="alerts/*" element={<ComingSoon title="问题与归因" />} />
+        <Route path="alerts/*" element={<IssueWorkspacePage />} />
         <Route path="qa/*" element={<ComingSoon title="QA 审核" />} />
         <Route path="retests/*" element={<ComingSoon title="发布与复测" />} />
         <Route path="runs/import" element={<ImportPage />} />
