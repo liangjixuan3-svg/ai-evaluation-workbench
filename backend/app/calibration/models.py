@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import CHAR, Boolean, Date, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CHAR,
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -19,6 +28,7 @@ class CalibrationBatch(Base):
     __tablename__ = "calibration_batches"
     __table_args__ = (
         UniqueConstraint("batch_date", name="uq_calibration_batch_date"),
+        CheckConstraint("target_count BETWEEN 1 AND 20", name="ck_calibration_batch_target_count"),
         MYSQL_TABLE_ARGS,
     )
 
@@ -36,6 +46,25 @@ class CalibrationReview(Base):
     __table_args__ = (
         UniqueConstraint(
             "evaluation_result_id", name="uq_calibration_review_evaluation_result"
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND agreed IS NULL AND corrected_passed IS NULL "
+            "AND disagreement_dimension IS NULL AND review_basis IS NULL "
+            "AND reviewed_by IS NULL AND reviewed_at IS NULL "
+            "AND include_in_regression = false) "
+            "OR (status = 'agreed' AND agreed = true AND corrected_passed IS NULL "
+            "AND disagreement_dimension IS NULL AND review_basis IS NULL "
+            "AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL "
+            "AND include_in_regression = false) "
+            "OR (status = 'corrected' AND agreed = false AND corrected_passed IS NOT NULL "
+            "AND disagreement_dimension IS NOT NULL AND review_basis IS NOT NULL "
+            "AND length(trim(review_basis)) > 0 AND reviewed_by IS NOT NULL "
+            "AND reviewed_at IS NOT NULL AND include_in_regression = true)",
+            name="ck_calibration_review_state",
+        ),
+        CheckConstraint(
+            "review_basis IS NULL OR length(review_basis) <= 1000",
+            name="ck_calibration_review_basis_length",
         ),
         MYSQL_TABLE_ARGS,
     )
@@ -60,7 +89,7 @@ class CalibrationReview(Base):
     disagreement_dimension: Mapped[CalibrationDimension | None] = mapped_column(
         enum_type(CalibrationDimension), nullable=True
     )
-    review_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_basis: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     include_in_regression: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

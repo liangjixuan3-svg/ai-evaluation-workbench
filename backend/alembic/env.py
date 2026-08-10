@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.alerts import models as alert_models
 from app.analysis import models as analysis_models
+from app.calibration import models as calibration_models
 from app.config import settings
 from app.db import Base
 from app.evaluation import models as evaluation_models
@@ -19,6 +20,7 @@ from app.shared import audit
 MODEL_MODULES = (
     alert_models,
     analysis_models,
+    calibration_models,
     audit,
     evaluation_models,
     ingestion_models,

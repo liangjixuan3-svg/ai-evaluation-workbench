@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from app.ingestion.models import Conversation, DataSource
 from app.quality_standards.models import QualityStandardVersion  # noqa: F401
 from app.shared.enums import (
     CalibrationBatchStatus,
+    CalibrationDimension,
     CalibrationReviewStatus,
     CalibrationSelectionReason,
     Confidence,
@@ -97,7 +98,73 @@ def test_calibration_models_keep_original_result_reference(
 def test_calibration_batch_date_is_unique(session: Session) -> None:
     session.add(CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20))
     session.commit()
-    session.add(CalibrationBatch(batch_date=date(2026, 8, 10), target_count=30))
+    session.add(CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.mark.parametrize("target_count", (0, 21))
+def test_calibration_batch_rejects_target_count_outside_one_to_twenty(
+    session: Session, target_count: int
+) -> None:
+    session.add(CalibrationBatch(batch_date=date(2026, 8, 10), target_count=target_count))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    ("status", "changes"),
+    (
+        (CalibrationReviewStatus.PENDING, {"agreed": True}),
+        (CalibrationReviewStatus.AGREED, {"agreed": True}),
+        (CalibrationReviewStatus.CORRECTED, {"agreed": False}),
+    ),
+)
+def test_calibration_review_rejects_invalid_status_combinations(
+    session: Session,
+    result: EvaluationResult,
+    status: CalibrationReviewStatus,
+    changes: dict[str, object],
+) -> None:
+    batch = CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20)
+    session.add(batch)
+    session.flush()
+    review = CalibrationReview(
+        batch_id=batch.id,
+        evaluation_result_id=result.id,
+        selection_reason=CalibrationSelectionReason.LOW_CONFIDENCE,
+        status=status,
+        **changes,
+    )
+    session.add(review)
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_calibration_review_rejects_review_basis_longer_than_one_thousand_characters(
+    session: Session, result: EvaluationResult
+) -> None:
+    batch = CalibrationBatch(batch_date=date(2026, 8, 10), target_count=20)
+    session.add(batch)
+    session.flush()
+    session.add(
+        CalibrationReview(
+            batch_id=batch.id,
+            evaluation_result_id=result.id,
+            selection_reason=CalibrationSelectionReason.LOW_CONFIDENCE,
+            status=CalibrationReviewStatus.CORRECTED,
+            agreed=False,
+            corrected_passed=True,
+            disagreement_dimension=CalibrationDimension.CORRECTNESS,
+            review_basis="x" * 1001,
+            reviewed_by="reviewer@example.com",
+            reviewed_at=datetime(2026, 8, 10, tzinfo=UTC),
+            include_in_regression=True,
+        )
+    )
 
     with pytest.raises(IntegrityError):
         session.flush()
