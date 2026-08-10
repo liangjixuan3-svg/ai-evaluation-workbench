@@ -93,6 +93,7 @@ class CalibrationReviewStatus(StrEnum):
 
 class CalibrationSelectionReason(StrEnum):
     LOW_CONFIDENCE = "low_confidence"
+    SEVERE_ERROR = "severe_error"
     RANDOM_SAMPLE = "random_sample"
     SCORE_BOUNDARY = "score_boundary"
 
