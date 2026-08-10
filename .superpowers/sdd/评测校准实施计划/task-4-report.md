@@ -39,3 +39,11 @@
 
 - 新增无 React 依赖的生产请求协调器，页面实际用它管理 current status、workspace/detail generation 与当前 review id。
 - 协调器 deferred 单测覆盖 workspace 成功/失败失效、状态切换、A/B 详情乱序、提交期间 latest status 与 ensure 合并/失败重试。
+
+## Fix Round 4
+
+- 先新增真实挂载页面的最小筛选测试，首次失败于 Mini DOM 丢失 React 写入元素的直接文本；表单测试继续暴露默认 input type、React 输入 polyfill 与 select options 缺口。
+- 只增强测试 Mini DOM：保留元素直接文本，补齐文本输入默认类型、选区、旧式输入事件别名和 select option 状态，并改用精确按钮文本查找；未修改任何生产逻辑或视觉。
+- 新增 5 条 `createRoot` + deferred 动态测试：筛选点击不重复 ensure；pending/reviewed/all 乱序中旧 workspace success/reject 均不污染 latest all；A/B 详情迟到 success/reject 均不覆盖 B，当前详情失败时无提交按钮。
+- 同意流程真实输入审核人、打开并聚焦 alertdialog、点击确认，断言 review id/actor 与提交期间 latest reviewed 刷新；不认同流程真实填写 corrected_passed、dimension、basis 并断言完整 body。
+- 全量前端测试 16 个文件、40 项通过；`npm run build` 和 `git diff --check` 通过。Vitest 仍输出沙箱 WebSocket `EPERM`，Vite 仍输出依赖包 `use client` 指令被忽略警告，两者均不影响退出码。
