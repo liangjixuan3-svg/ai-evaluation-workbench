@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { agreeCalibration, disagreeCalibration, ensureTodayCalibrationBatch, getCalibrationReview, getCalibrationWorkspace, type CalibrationDimension, type CalibrationFilter, type CalibrationReviewDetail, type CalibrationWorkspace, type CalibrationWorkspaceItem } from "../../app/calibrationApi";
+import { CalibrationWorkspaceController, ensureTodayOnce } from "./calibrationWorkspaceController";
 
 const DIMENSIONS: CalibrationDimension[] = ["correctness", "completeness", "compliance", "tone"];
 
@@ -17,15 +18,6 @@ const SELECTION_LABELS = {
   severe_error: "严重错误",
   random_sample: "随机抽样",
 };
-
-let todayBatchPromise: Promise<unknown> | null = null;
-
-function prepareTodayBatch(): Promise<unknown> {
-  if (!todayBatchPromise) {
-    todayBatchPromise = ensureTodayCalibrationBatch().finally(() => { todayBatchPromise = null; });
-  }
-  return todayBatchPromise;
-}
 
 export function calibrationDimensionLabel(value: CalibrationDimension | null): string {
   return value ? DIMENSION_LABELS[value] : "暂无";
@@ -125,10 +117,7 @@ export function CalibrationWorkspacePage() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
-  const statusRef = useRef(status);
-  const selectedIdRef = useRef(selectedId);
-  const workspaceGenerationRef = useRef(0);
-  const detailGenerationRef = useRef(0);
+  const controllerRef = useRef(new CalibrationWorkspaceController());
 
   function applyDetail(value: CalibrationReviewDetail) {
     setDetail(value);
@@ -140,8 +129,7 @@ export function CalibrationWorkspacePage() {
   }
 
   function clearDetail() {
-    detailGenerationRef.current += 1;
-    selectedIdRef.current = "";
+    controllerRef.current.clearDetail();
     setSelectedId("");
     setDetail(null);
     setDetailLoading(false);
@@ -150,8 +138,7 @@ export function CalibrationWorkspacePage() {
   }
 
   async function loadDetail(reviewId: string) {
-    const generation = ++detailGenerationRef.current;
-    selectedIdRef.current = reviewId;
+    const generation = controllerRef.current.beginDetail(reviewId);
     setSelectedId(reviewId);
     setDetail(null);
     setDetailLoading(true);
@@ -160,41 +147,40 @@ export function CalibrationWorkspacePage() {
     setError("");
     try {
       const response = await getCalibrationReview(reviewId);
-      if (generation !== detailGenerationRef.current || reviewId !== selectedIdRef.current) return;
+      if (!controllerRef.current.isCurrentDetail(generation, reviewId)) return;
       applyDetail(response);
     } catch (reason) {
-      if (generation !== detailGenerationRef.current || reviewId !== selectedIdRef.current) return;
+      if (!controllerRef.current.isCurrentDetail(generation, reviewId)) return;
       setDetail(null);
       setError(reason instanceof Error ? reason.message : "校准详情加载失败");
     } finally {
-      if (generation === detailGenerationRef.current && reviewId === selectedIdRef.current) setDetailLoading(false);
+      if (controllerRef.current.isCurrentDetail(generation, reviewId)) setDetailLoading(false);
     }
   }
 
   async function loadWorkspace(requestedStatus: CalibrationFilter, preferredId = "") {
-    const generation = ++workspaceGenerationRef.current;
+    const generation = controllerRef.current.beginWorkspace(requestedStatus);
     try {
       const response = await getCalibrationWorkspace(requestedStatus);
-      if (generation !== workspaceGenerationRef.current || requestedStatus !== statusRef.current) return;
+      if (!controllerRef.current.isCurrentWorkspace(generation, requestedStatus)) return;
       setWorkspace(response);
-      const retainedId = preferredId || selectedIdRef.current;
+      const retainedId = preferredId || controllerRef.current.selectedReviewId();
       const nextId = response.items.find((item) => item.review_id === retainedId)?.review_id ?? response.items[0]?.review_id ?? "";
       if (nextId) await loadDetail(nextId);
       else clearDetail();
     } catch (reason) {
-      if (generation !== workspaceGenerationRef.current || requestedStatus !== statusRef.current) return;
+      if (!controllerRef.current.isCurrentWorkspace(generation, requestedStatus)) return;
       clearDetail();
       setWorkspace(null);
       setError(reason instanceof Error ? reason.message : "校准工作台加载失败");
     }
   }
 
-  useEffect(() => { void prepareTodayBatch().then(() => setPrepared(true)).catch((reason) => setError(reason instanceof Error ? reason.message : "今日校准批次准备失败")); }, []);
+  useEffect(() => { void ensureTodayOnce(ensureTodayCalibrationBatch).then(() => setPrepared(true)).catch((reason) => setError(reason instanceof Error ? reason.message : "今日校准批次准备失败")); }, []);
   useEffect(() => { if (prepared) void loadWorkspace(status); }, [prepared, status]);
 
   function changeStatus(nextStatus: CalibrationFilter) {
-    if (nextStatus === statusRef.current) return;
-    statusRef.current = nextStatus;
+    if (nextStatus === controllerRef.current.currentStatus()) return;
     clearDetail();
     setWorkspace(null);
     setError("");
@@ -209,7 +195,7 @@ export function CalibrationWorkspacePage() {
     try {
       if (kind === "agree") await agreeCalibration(detail.review_id, actor.trim());
       else if (correctedPassed !== null && disagreementDimension) await disagreeCalibration(detail.review_id, { actor: actor.trim(), corrected_passed: correctedPassed, disagreement_dimension: disagreementDimension, review_basis: reviewBasis.trim() });
-      await loadWorkspace(statusRef.current, detail.review_id);
+      await loadWorkspace(controllerRef.current.currentStatus(), detail.review_id);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "复核提交失败"); }
     finally { setBusy(""); }
   }

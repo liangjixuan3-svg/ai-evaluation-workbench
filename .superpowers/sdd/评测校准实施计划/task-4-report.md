@@ -34,3 +34,8 @@
 
 - workspace 查询的成功与失败统一受 generation 与 requested status 守卫；迟到的旧筛选失败不再写入当前错误状态。
 - 切换筛选时立即清空 workspace、详情与错误，加载新筛选期间不会保留旧队列。
+
+## Fix Round 3
+
+- 新增无 React 依赖的生产请求协调器，页面实际用它管理 current status、workspace/detail generation 与当前 review id。
+- 协调器 deferred 单测覆盖 workspace 成功/失败失效、状态切换、A/B 详情乱序、提交期间 latest status 与 ensure 合并/失败重试。
