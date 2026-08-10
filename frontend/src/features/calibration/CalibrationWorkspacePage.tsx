@@ -173,22 +173,31 @@ export function CalibrationWorkspacePage() {
 
   async function loadWorkspace(requestedStatus: CalibrationFilter, preferredId = "") {
     const generation = ++workspaceGenerationRef.current;
-    const response = await getCalibrationWorkspace(requestedStatus);
-    if (generation !== workspaceGenerationRef.current || requestedStatus !== statusRef.current) return;
-    setWorkspace(response);
-    const retainedId = preferredId || selectedIdRef.current;
-    const nextId = response.items.find((item) => item.review_id === retainedId)?.review_id ?? response.items[0]?.review_id ?? "";
-    if (nextId) await loadDetail(nextId);
-    else clearDetail();
+    try {
+      const response = await getCalibrationWorkspace(requestedStatus);
+      if (generation !== workspaceGenerationRef.current || requestedStatus !== statusRef.current) return;
+      setWorkspace(response);
+      const retainedId = preferredId || selectedIdRef.current;
+      const nextId = response.items.find((item) => item.review_id === retainedId)?.review_id ?? response.items[0]?.review_id ?? "";
+      if (nextId) await loadDetail(nextId);
+      else clearDetail();
+    } catch (reason) {
+      if (generation !== workspaceGenerationRef.current || requestedStatus !== statusRef.current) return;
+      clearDetail();
+      setWorkspace(null);
+      setError(reason instanceof Error ? reason.message : "校准工作台加载失败");
+    }
   }
 
   useEffect(() => { void prepareTodayBatch().then(() => setPrepared(true)).catch((reason) => setError(reason instanceof Error ? reason.message : "今日校准批次准备失败")); }, []);
-  useEffect(() => { if (prepared) void loadWorkspace(status).catch((reason) => setError(reason instanceof Error ? reason.message : "校准工作台加载失败")); }, [prepared, status]);
+  useEffect(() => { if (prepared) void loadWorkspace(status); }, [prepared, status]);
 
   function changeStatus(nextStatus: CalibrationFilter) {
     if (nextStatus === statusRef.current) return;
     statusRef.current = nextStatus;
     clearDetail();
+    setWorkspace(null);
+    setError("");
     setStatus(nextStatus);
   }
 
