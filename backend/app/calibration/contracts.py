@@ -12,9 +12,11 @@ class _StrictBody(BaseModel):
 class AgreeReviewInput(_StrictBody):
     actor: str = Field(min_length=1, max_length=128)
 
-    @field_validator("actor")
+    @field_validator("actor", mode="before")
     @classmethod
-    def strip_actor(cls, value: str) -> str:
+    def strip_actor(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         value = value.strip()
         if not value:
             raise ValueError("actor is required")
@@ -26,9 +28,11 @@ class DisagreeReviewInput(AgreeReviewInput):
     disagreement_dimension: CalibrationDimension = Field(strict=False)
     review_basis: str = Field(min_length=1, max_length=1000)
 
-    @field_validator("review_basis")
+    @field_validator("review_basis", mode="before")
     @classmethod
-    def strip_review_basis(cls, value: str) -> str:
+    def strip_review_basis(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         value = value.strip()
         if not value:
             raise ValueError("review_basis is required")

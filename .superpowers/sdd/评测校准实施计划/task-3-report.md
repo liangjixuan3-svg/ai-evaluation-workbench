@@ -45,3 +45,24 @@ exit 0
 ## Concerns
 
 - 无。FastAPI `TestClient` 输出一条既存 Starlette `httpx` 弃用警告，不影响本任务测试结果。
+
+## Fix Round 1
+
+### Red
+
+- 在 focused SQLite API 测试中补充了详情中包含手机号、邮箱和订单号的 `reason` 与任意嵌套 `evidence`、trim 后 1000/1001 字符边界、workspace 三种 status 的全量汇总与分歧维度并列稳定性、两个独立 session 处理最后两条任务，以及 MySQL SQL 编译和锁调用顺序检查。
+- 第一次执行 `./.venv/bin/pytest tests/integration/test_calibration_api.py -q` 结果为 `3 failed, 3 passed`：`reason`/`evidence` 包含原始敏感信息，前空格包围的 1000 字符 `review_basis` 被误拒绝，且不存在 batch 锁 helper。
+- 将 SQLite fixture 调整为生产 `session_factory` 同样的 `autoflush=False` 后再次执行，结果为 `2 failed, 4 passed`：最后两条复核后 batch 仍为 `open`。这确认 pending 锁定查询之前还需显式 flush 当前完成。
+
+### Green
+
+- `DisagreeReviewInput` 的 `actor` 和 `review_basis` validator 改为 `mode="before"`，因而 trim 后再执行 `min_length`/`max_length` 约束。
+- 复核流程先读取不变的 `batch_id`，然后 `SELECT calibration_batches ... FOR UPDATE` 锁定共享 batch，再锁当前 review。在锁内 flush 当前复核写入后，以 `SELECT calibration_reviews ... FOR UPDATE` 重查 pending，只有无待审记录时设为 `completed`。
+- 详情、workspace 和复核响应在组装后使用 `_redact_json` 递归脱敏。因此 `reason`、嵌套 `evidence`、人工依据与其他直接展示的字符串都会复用 `redact_text`。
+- 修复后 focused API 测试结果为 `6 passed, 1 warning`。
+
+### Self-review
+
+- 两个独立 SQLite session 测试以 `autoflush=False` 证明最后两条连续完成后批次为 `completed`。SQLite 不提供行级 `FOR UPDATE` 语义，因此同时以 MySQL dialect 编译断言 `FOR UPDATE` 存在，并以 monkeypatch 断言 batch 锁调用在 review 锁之前；未连接 MySQL。
+- 三种 workspace status 均断言同一份 full-batch summary：`reviewed=3`、`total=4`、`pending=1`、`agreement_rate=1/3`，且 `completeness`/`correctness` 并列时稳定返回字典序最先的 `completeness`。
+- 本轮不添加 Provider，不更改 `EvaluationResult`，不连接/迁移 MySQL，也不启动服务。

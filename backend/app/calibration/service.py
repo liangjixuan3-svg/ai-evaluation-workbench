@@ -133,7 +133,7 @@ def calibration_workspace(
         displayed = reviewed
     else:
         displayed = reviews
-    return {
+    return _redact_json({
         "batch": {
             "id": batch.id,
             "batch_date": batch.batch_date.isoformat(),
@@ -152,7 +152,7 @@ def calibration_workspace(
             "top_disagreement_dimension": _top_disagreement_dimension(disagreements),
         },
         "items": [_workspace_item(session, review) for review in displayed],
-    }
+    })
 
 
 def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any]:
@@ -167,7 +167,7 @@ def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any
         raise LookupError("calibration review evaluation run does not exist")
     conversation = result.conversation
     quality_standard = run.quality_standard_version
-    return {
+    return _redact_json({
         **review_payload(review),
         "batch": _batch_payload(session.get(CalibrationBatch, review.batch_id)),
         "conversation": {
@@ -209,11 +209,11 @@ def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any
                 "parameters": run.model_parameters,
             },
         },
-    }
+    })
 
 
 def agree_with_evaluation(session: Session, review_id: str, actor: str) -> CalibrationReview:
-    review = _review_for_update(session, review_id)
+    batch, review = _batch_and_review_for_update(session, review_id)
     if review.status is not CalibrationReviewStatus.PENDING:
         return review
     actor = actor.strip()
@@ -223,7 +223,8 @@ def agree_with_evaluation(session: Session, review_id: str, actor: str) -> Calib
     review.agreed = True
     review.reviewed_by = actor
     review.reviewed_at = utc_now()
-    _complete_batch_when_fully_reviewed(session, review.batch_id)
+    session.flush()
+    _complete_batch_when_fully_reviewed(session, batch)
     session.commit()
     return review
 
@@ -231,7 +232,7 @@ def agree_with_evaluation(session: Session, review_id: str, actor: str) -> Calib
 def disagree_with_evaluation(
     session: Session, review_id: str, input: DisagreeReviewInput
 ) -> CalibrationReview:
-    review = _review_for_update(session, review_id)
+    batch, review = _batch_and_review_for_update(session, review_id)
     if review.status is not CalibrationReviewStatus.PENDING:
         return review
     actor = input.actor.strip()
@@ -250,13 +251,14 @@ def disagree_with_evaluation(
     review.reviewed_by = actor
     review.reviewed_at = utc_now()
     review.include_in_regression = True
-    _complete_batch_when_fully_reviewed(session, review.batch_id)
+    session.flush()
+    _complete_batch_when_fully_reviewed(session, batch)
     session.commit()
     return review
 
 
 def review_payload(review: CalibrationReview) -> dict[str, Any]:
-    return {
+    return _redact_json({
         "id": review.id,
         "review_id": review.id,
         "evaluation_result_id": review.evaluation_result_id,
@@ -271,31 +273,56 @@ def review_payload(review: CalibrationReview) -> dict[str, Any]:
         "reviewed_by": review.reviewed_by,
         "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
         "include_in_regression": review.include_in_regression,
-    }
+    })
+
+
+def _batch_and_review_for_update(
+    session: Session, review_id: str
+) -> tuple[CalibrationBatch, CalibrationReview]:
+    batch_id = session.scalar(
+        select(CalibrationReview.batch_id).where(CalibrationReview.id == review_id)
+    )
+    if batch_id is None:
+        raise LookupError("calibration review does not exist")
+    batch = _batch_for_update(session, batch_id)
+    review = _review_for_update(session, review_id)
+    return batch, review
+
+
+def _batch_lock_statement(batch_id: str):
+    return select(CalibrationBatch).where(CalibrationBatch.id == batch_id).with_for_update()
+
+
+def _batch_for_update(session: Session, batch_id: str) -> CalibrationBatch:
+    batch = session.scalar(_batch_lock_statement(batch_id))
+    if batch is None:
+        raise LookupError("calibration batch does not exist")
+    return batch
 
 
 def _review_for_update(session: Session, review_id: str) -> CalibrationReview:
     review = session.scalar(
-        select(CalibrationReview).where(CalibrationReview.id == review_id).with_for_update()
+        select(CalibrationReview)
+        .where(CalibrationReview.id == review_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if review is None:
         raise LookupError("calibration review does not exist")
     return review
 
 
-def _complete_batch_when_fully_reviewed(session: Session, batch_id: str) -> None:
-    batch = session.get(CalibrationBatch, batch_id)
-    if batch is None:
-        raise LookupError("calibration batch does not exist")
-    has_pending = session.scalar(
-        select(
-            exists().where(
-                CalibrationReview.batch_id == batch_id,
-                CalibrationReview.status == CalibrationReviewStatus.PENDING,
-            )
+def _complete_batch_when_fully_reviewed(session: Session, batch: CalibrationBatch) -> None:
+    pending_review = session.scalar(
+        select(CalibrationReview.id)
+        .where(
+            CalibrationReview.batch_id == batch.id,
+            CalibrationReview.status == CalibrationReviewStatus.PENDING,
         )
+        .limit(1)
+        .with_for_update()
     )
-    if not has_pending:
+    if pending_review is None:
         batch.status = CalibrationBatchStatus.COMPLETED
 
 
