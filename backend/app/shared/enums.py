@@ -78,3 +78,27 @@ class RetestStatus(StrEnum):
 class RetestCohort(StrEnum):
     REPLAY = "replay"
     NEW = "new"
+
+
+class CalibrationBatchStatus(StrEnum):
+    OPEN = "open"
+    COMPLETED = "completed"
+
+
+class CalibrationReviewStatus(StrEnum):
+    PENDING = "pending"
+    AGREED = "agreed"
+    CORRECTED = "corrected"
+
+
+class CalibrationSelectionReason(StrEnum):
+    LOW_CONFIDENCE = "low_confidence"
+    RANDOM_SAMPLE = "random_sample"
+    SCORE_BOUNDARY = "score_boundary"
+
+
+class CalibrationDimension(StrEnum):
+    CORRECTNESS = "correctness"
+    COMPLETENESS = "completeness"
+    COMPLIANCE = "compliance"
+    TONE = "tone"
