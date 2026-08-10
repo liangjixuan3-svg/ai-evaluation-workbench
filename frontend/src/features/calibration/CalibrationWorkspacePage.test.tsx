@@ -471,6 +471,50 @@ describe("评测校准工作台", () => {
     expect(api.getCalibrationReview).toHaveBeenCalledTimes(2);
   });
 
+  it("提交刷新等待期间选择 C 时始终保留最新的 C 详情与表单", async () => {
+    const itemA = workspaceItem("review-A", "场景 A");
+    const itemB = workspaceItem("review-B", "场景 B");
+    const itemC = workspaceItem("review-C", "场景 C");
+    const submission = deferred<CalibrationReviewDetail>();
+    const refreshedWorkspace = deferred<CalibrationWorkspace>();
+    api.ensureTodayCalibrationBatch.mockResolvedValue(workspace.batch);
+    api.getCalibrationWorkspace
+      .mockResolvedValueOnce({ ...workspace, items: [itemA, itemB, itemC] })
+      .mockReturnValueOnce(refreshedWorkspace.promise);
+    api.getCalibrationReview
+      .mockResolvedValueOnce(reviewDetail(itemA, "case-A"))
+      .mockResolvedValueOnce(reviewDetail(itemB, "case-B"))
+      .mockResolvedValueOnce(reviewDetail(itemC, "case-C"));
+    api.agreeCalibration.mockReturnValueOnce(submission.promise);
+
+    const container = await mountCalibration();
+    await flush();
+    await inputValue(findInput(container, "审核人")!, "A 审核人");
+    await click(container, "认同模型判定");
+    await click(container, "确认提交");
+    await act(async () => { findButtonContaining(container, "场景 B")!.dispatchEvent(new MiniEvent("click")); });
+    await flush();
+    expect(container.textContent).toContain("case-B");
+
+    submission.resolve({ ...reviewDetail(itemA, "case-A"), status: "agreed", agreed: true });
+    await flush();
+    expect(api.getCalibrationWorkspace).toHaveBeenCalledTimes(2);
+
+    await act(async () => { findButtonContaining(container, "场景 C")!.dispatchEvent(new MiniEvent("click")); });
+    await flush();
+    expect(container.textContent).toContain("case-C");
+    await inputValue(findInput(container, "审核人")!, "C 审核人");
+
+    refreshedWorkspace.resolve({ ...workspace, items: [itemA, itemB, itemC] });
+    await flush();
+
+    expect(container.textContent).toContain("case-C");
+    expect(container.textContent).not.toContain("case-B");
+    expect(findInput(container, "审核人")!.value).toBe("C 审核人");
+    expect(findButtonContaining(container, "场景 C")!.getAttribute("aria-current")).toBe("true");
+    expect(api.getCalibrationReview).toHaveBeenCalledTimes(3);
+  });
+
   it("真实挂载嵌套 evidence 时不崩溃并显示可读中文", async () => {
     const nestedDetail = {
       ...detail,

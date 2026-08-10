@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -34,13 +33,14 @@ _PRIORITY_QUOTAS = (
     (CalibrationSelectionReason.SEVERE_ERROR, 4),
     (CalibrationSelectionReason.RANDOM_SAMPLE, 2),
 )
-_SENSITIVE_MODEL_PARAMETER_KEYS = {
-    "api_key",
-    "token",
-    "access_token",
-    "secret",
-    "password",
-    "authorization",
+_SAFE_MODEL_PARAMETER_KEYS = {
+    "frequency_penalty",
+    "max_tokens",
+    "presence_penalty",
+    "seed",
+    "stop",
+    "temperature",
+    "top_p",
 }
 
 CalibrationWorkspaceStatus = Literal["pending", "reviewed", "all"]
@@ -415,19 +415,13 @@ def _redact_json(value: Any) -> Any:
 
 
 def _sanitize_model_parameters(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_sanitize_model_parameters(item) for item in value]
-    if isinstance(value, dict):
-        sanitized = {}
-        for key, item in value.items():
-            normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
-            sanitized[key] = (
-                "[REDACTED]"
-                if normalized_key in _SENSITIVE_MODEL_PARAMETER_KEYS
-                else _sanitize_model_parameters(item)
-            )
-        return sanitized
-    return value
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: _redact_json(item)
+        for key, item in value.items()
+        if str(key).casefold() in _SAFE_MODEL_PARAMETER_KEYS
+    }
 
 
 def _candidates(

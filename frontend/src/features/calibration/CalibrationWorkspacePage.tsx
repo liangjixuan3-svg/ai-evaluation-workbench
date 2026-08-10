@@ -190,9 +190,9 @@ export function CalibrationWorkspacePage() {
       const response = await getCalibrationWorkspace(requestedStatus);
       if (!controllerRef.current.isCurrentWorkspace(generation, requestedStatus)) return;
       setWorkspace(response);
-      const retainedId = preferredId || controllerRef.current.selectedReviewId();
+      const retainedId = controllerRef.current.selectedReviewId() || preferredId;
       const nextId = response.items.find((item) => item.review_id === retainedId)?.review_id ?? response.items[0]?.review_id ?? "";
-      if (preserveDetail && nextId === preferredId && detailRef.current?.review_id === nextId) setSelectedId(nextId);
+      if (preserveDetail && detailRef.current?.review_id === nextId) setSelectedId(nextId);
       else if (nextId) await loadDetail(nextId);
       else clearDetail();
     } catch (reason) {

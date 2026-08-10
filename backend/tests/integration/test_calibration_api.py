@@ -112,19 +112,7 @@ def test_calibration_workspace_and_detail_expose_locked_evaluation_without_sensi
     assert detail_payload["locked_rule"]["model"] == {
         "provider": "seed-provider",
         "model": "seed-model-v1",
-        "parameters": {
-            "temperature": 0,
-            "API-Key": "[REDACTED]",
-            "nested": [
-                {"token": "[REDACTED]", "access-token": "[REDACTED]"},
-                {
-                    "SECRET": "[REDACTED]",
-                    "password": "[REDACTED]",
-                    "Authorization": "[REDACTED]",
-                    "top_p": 0.8,
-                },
-            ],
-        },
+        "parameters": {"temperature": 0},
     }
     transcript = str(detail_payload)
     assert "13800138000" not in transcript
@@ -519,6 +507,13 @@ def _seed_results(session: Session) -> None:
         model_parameters={
             "temperature": 0,
             "API-Key": "credential-value",
+            "apiKey": "credential-value",
+            "client_secret": "credential-value",
+            "private-key": "credential-value",
+            "refresh_token": "credential-value",
+            "bearerToken": "credential-value",
+            "x-api-key": "credential-value",
+            "credentials": "credential-value",
             "nested": [
                 {"token": "credential-value", "access-token": "credential-value"},
                 {
