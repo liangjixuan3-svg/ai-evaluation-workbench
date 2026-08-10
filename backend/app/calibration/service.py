@@ -84,8 +84,8 @@ def ensure_today_batch(
 def _candidates(
     session: Session, business_date: date
 ) -> list[tuple[EvaluationResult, CalibrationSelectionReason]]:
-    window_start = datetime.combine(business_date - timedelta(days=6), datetime.min.time(), UTC)
-    window_end = datetime.combine(business_date + timedelta(days=1), datetime.min.time(), UTC)
+    window_start = _shanghai_day_start(business_date - timedelta(days=6))
+    window_end = _shanghai_day_start(business_date + timedelta(days=1))
     stmt = (
         select(EvaluationResult)
         .join(EvaluationResult.run)
@@ -113,6 +113,10 @@ def _candidates(
     ]
 
 
+def _shanghai_day_start(day: date) -> datetime:
+    return datetime.combine(day, datetime.min.time(), _SHANGHAI).astimezone(UTC)
+
+
 def _select_candidates(
     candidates: list[tuple[EvaluationResult, CalibrationSelectionReason]],
     business_date: date,
@@ -123,6 +127,9 @@ def _select_candidates(
         buckets[candidate[1]].append(candidate)
     for bucket in buckets.values():
         bucket.sort(key=lambda item: item[0].id)
+    random.Random(business_date.toordinal()).shuffle(
+        buckets[CalibrationSelectionReason.RANDOM_SAMPLE]
+    )
 
     selected: list[tuple[EvaluationResult, CalibrationSelectionReason]] = []
     for reason, quota in _PRIORITY_QUOTAS:
@@ -132,5 +139,6 @@ def _select_candidates(
 
     selected_ids = {result.id for result, _ in selected}
     remaining = [candidate for candidate in candidates if candidate[0].id not in selected_ids]
+    remaining.sort(key=lambda item: item[0].id)
     random.Random(business_date.toordinal()).shuffle(remaining)
     return selected + remaining[: target_count - len(selected)]

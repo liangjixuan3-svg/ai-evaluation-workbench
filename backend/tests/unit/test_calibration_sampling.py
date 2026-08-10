@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import random
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -12,7 +14,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.calibration.models import CalibrationBatch, CalibrationReview
-from app.calibration.service import ensure_today_batch, selection_reason
+from app.calibration.service import _select_candidates, ensure_today_batch, selection_reason
 from app.db import Base
 from app.evaluation.models import (
     EvaluationResult,
@@ -30,6 +32,7 @@ from app.shared.enums import (
 )
 
 TODAY = date(2026, 8, 10)
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @pytest.fixture
@@ -60,9 +63,11 @@ def _add_result(
     status: RunStatus = RunStatus.SUCCEEDED,
     severe_factual_error: bool = False,
     severe_compliance_error: bool = False,
+    created_at: datetime | None = None,
+    result_id: str | None = None,
 ) -> EvaluationResult:
     suffix = uuid4().hex
-    created_at = _at(created_on)
+    result_created_at = created_at or _at(created_on)
     source = DataSource(name=f"source-{suffix}", kind="simulated")
     conversation = Conversation(data_source=source, external_id=f"conversation-{suffix}", body={})
     template = EvaluationTemplate(
@@ -82,10 +87,11 @@ def _add_result(
         model="fake-v1",
         model_parameters={},
         status=status,
-        completed_at=created_at if status is RunStatus.SUCCEEDED else None,
-        created_at=created_at,
+        completed_at=result_created_at if status is RunStatus.SUCCEEDED else None,
+        created_at=result_created_at,
     )
     result = EvaluationResult(
+        id=result_id,
         run=run,
         conversation=conversation,
         total_score=Decimal(score),
@@ -96,7 +102,7 @@ def _add_result(
         confidence=confidence,
         severe_factual_error=severe_factual_error,
         severe_compliance_error=severe_compliance_error,
-        created_at=created_at,
+        created_at=result_created_at,
     )
     session.add(result)
     return result
@@ -222,6 +228,74 @@ def test_ensure_today_batch_excludes_old_incomplete_and_historical_results(sessi
     batch = ensure_today_batch(session, batch_date=TODAY)
 
     assert [review.evaluation_result_id for review in _reviews(session, batch)] == [eligible.id]
+
+
+def test_ensure_today_batch_uses_shanghai_business_day_boundaries(session: Session) -> None:
+    at_start = _add_result(
+        session,
+        created_at=datetime(2026, 8, 4, 0, tzinfo=SHANGHAI),
+    )
+    _add_result(
+        session,
+        created_at=datetime(2026, 8, 3, 23, 59, 59, tzinfo=SHANGHAI),
+    )
+    _add_result(
+        session,
+        created_at=datetime(2026, 8, 11, 0, tzinfo=SHANGHAI),
+    )
+    session.commit()
+
+    batch = ensure_today_batch(session, batch_date=TODAY)
+
+    assert [review.evaluation_result_id for review in _reviews(session, batch)] == [at_start.id]
+
+
+def test_random_quota_uses_business_date_seeded_shuffle(session: Session) -> None:
+    for _ in range(8):
+        _add_result(session, confidence=Confidence.LOW)
+    for _ in range(6):
+        _add_result(session, score="75.00")
+    for _ in range(4):
+        _add_result(session, score="60.00", severe_factual_error=True)
+    candidates = [
+        _add_result(
+            session,
+            result_id=f"00000000-0000-0000-0000-{number:012d}",
+        )
+        for number in range(1, 6)
+    ]
+    session.commit()
+    expected = sorted(candidates, key=lambda result: result.id)
+    random.Random(TODAY.toordinal()).shuffle(expected)
+
+    batch = ensure_today_batch(session, batch_date=TODAY)
+
+    random_review_ids = {
+        review.evaluation_result_id
+        for review in _reviews(session, batch)
+        if review.selection_reason is CalibrationSelectionReason.RANDOM_SAMPLE
+    }
+    assert random_review_ids == {result.id for result in expected[:2]}
+
+
+def test_remaining_fill_is_stable_when_candidate_input_order_changes(session: Session) -> None:
+    candidates = [
+        _add_result(
+            session,
+            result_id=f"00000000-0000-0000-0000-{number:012d}",
+        )
+        for number in range(1, 6)
+    ]
+    session.commit()
+    classified = [
+        (result, CalibrationSelectionReason.RANDOM_SAMPLE)
+        for result in candidates
+    ]
+
+    forward = _select_candidates(classified, TODAY, target_count=20)
+    reversed_input = _select_candidates(list(reversed(classified)), TODAY, target_count=20)
+
+    assert [result.id for result, _ in forward] == [result.id for result, _ in reversed_input]
 
 
 def test_ensure_today_batch_uses_each_results_template_threshold(session: Session) -> None:
