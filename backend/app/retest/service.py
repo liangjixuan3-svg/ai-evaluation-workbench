@@ -1,24 +1,50 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.alerts.models import Alert, AlertResult, Task
 from app.analysis.models import BadcaseCluster, ClusterMember
+from app.evaluation.contracts import EvaluationRequest
 from app.evaluation.models import EvaluationResult, EvaluationRun, RuleVersion
+from app.evaluation.providers import EvaluationProvider
+from app.evaluation.scoring import calculate_outcome
 from app.ingestion.models import Conversation
+from app.ingestion.redaction import redact_conversation
 from app.remediation.models import QADraft, QAVersion
 from app.retest.models import RetestRun, RetestSample
-from app.shared.audit import record_audit
-from app.shared.enums import AlertStatus, RetestCohort, RetestStatus, TaskStatus, TaskType
+from app.shared.audit import AuditEvent, record_audit
+from app.shared.enums import (
+    AlertStatus,
+    Confidence,
+    QADraftStatus,
+    RetestCohort,
+    RetestStatus,
+    RunStatus,
+    TaskStatus,
+    TaskType,
+)
 from app.shared.types import new_uuid, utc_now
 
 
 class InvalidRetestState(ValueError):
     pass
+
+
+class RetestExecutionError(RuntimeError):
+    pass
+
+
+class RetestExecutionSuperseded(RuntimeError):
+    pass
+
+
+STALE_RETEST_AFTER = timedelta(minutes=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,10 +75,14 @@ def decide_retest(
     )
 
 
-def mark_published(session: Session, qa_version_id: str, actor: str) -> RetestRun:
+def mark_published(
+    session: Session, qa_version_id: str, actor: str, release_note: str = ""
+) -> RetestRun:
     if not actor.strip():
         raise InvalidRetestState("actor is required")
-    version = session.get(QAVersion, qa_version_id)
+    version = session.scalar(
+        select(QAVersion).where(QAVersion.id == qa_version_id).with_for_update()
+    )
     if version is None or version.approved_at is None:
         raise InvalidRetestState("只有已审核 QA 版本可以发布")
     draft = session.get(QADraft, version.draft_id)
@@ -71,7 +101,6 @@ def mark_published(session: Session, qa_version_id: str, actor: str) -> RetestRu
         select(RetestRun).where(
             RetestRun.alert_id == alert.id,
             RetestRun.qa_version_id == version.id,
-            RetestRun.status.in_((RetestStatus.QUEUED, RetestStatus.RUNNING)),
         )
     )
     if existing is not None:
@@ -109,21 +138,42 @@ def mark_published(session: Session, qa_version_id: str, actor: str) -> RetestRu
         action="qa_published",
         entity_type="retest_run",
         entity_id=retest.id,
-        payload={"qa_version_id": version.id, "alert_id": alert.id},
+        payload={
+            "qa_version_id": version.id,
+            "alert_id": alert.id,
+            "release_note": release_note.strip(),
+        },
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.scalar(
+            select(RetestRun).where(
+                RetestRun.alert_id == alert.id,
+                RetestRun.qa_version_id == version.id,
+            )
+        )
+        if existing is None:
+            raise
+        return existing
     return retest
 
 
 def build_retest_sample(session: Session, run_id: str) -> list[RetestSample]:
-    retest = session.get(RetestRun, run_id)
+    retest = session.scalar(
+        select(RetestRun)
+        .where(RetestRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if retest is None:
         raise LookupError("retest run does not exist")
+    if retest.status != RetestStatus.QUEUED:
+        raise InvalidRetestState("只有等待中的复测任务可以刷新样本")
     existing = list(
         session.scalars(select(RetestSample).where(RetestSample.retest_run_id == run_id))
     )
-    if existing:
-        return existing
     alert = session.get(Alert, retest.alert_id)
     rule = session.get(RuleVersion, retest.rule_version_id)
     if alert is None or rule is None:
@@ -139,48 +189,325 @@ def build_retest_sample(session: Session, run_id: str) -> list[RetestSample]:
             .limit(replay_limit)
         )
     )
-    samples = [
-        RetestSample(
-            retest_run_id=retest.id,
-            conversation_id=result.conversation_id,
-            cohort=RetestCohort.REPLAY,
-            source_evaluation_result_id=result.id,
+    existing_keys = {(sample.conversation_id, sample.cohort) for sample in existing}
+    replay_remaining = max(
+        replay_limit - sum(sample.cohort == RetestCohort.REPLAY for sample in existing), 0
+    )
+    replay_candidates = []
+    seen_replay_ids = {
+        conversation_id
+        for conversation_id, cohort in existing_keys
+        if cohort == RetestCohort.REPLAY
+    }
+    for result in source_results:
+        if result.conversation_id in seen_replay_ids:
+            continue
+        seen_replay_ids.add(result.conversation_id)
+        replay_candidates.append(
+            RetestSample(
+                retest_run_id=retest.id,
+                conversation_id=result.conversation_id,
+                cohort=RetestCohort.REPLAY,
+                source_evaluation_result_id=result.id,
+            )
         )
-        for result in source_results
-    ]
-    replay_conversation_ids = {sample.conversation_id for sample in samples}
+    samples = replay_candidates[:replay_remaining]
+    replay_conversation_ids = {
+        sample.conversation_id
+        for sample in (*existing, *samples)
+        if sample.cohort == RetestCohort.REPLAY
+    }
+    new_remaining = max(
+        new_limit - sum(sample.cohort == RetestCohort.NEW for sample in existing), 0
+    )
     new_conversations = list(
         session.scalars(
             select(Conversation)
             .where(
                 Conversation.scenario == alert.scenario,
-                Conversation.created_at >= retest.created_at,
+                Conversation.occurred_at >= retest.created_at,
                 Conversation.id.not_in(replay_conversation_ids),
             )
-            .order_by(Conversation.created_at.desc())
+            .order_by(Conversation.occurred_at.desc())
             .limit(new_limit)
         )
     )
-    samples.extend(
+    new_candidates = [
         RetestSample(
             retest_run_id=retest.id,
             conversation_id=conversation.id,
             cohort=RetestCohort.NEW,
         )
         for conversation in new_conversations
-    )
+        if (conversation.id, RetestCohort.NEW) not in existing_keys
+    ]
+    samples.extend(new_candidates[:new_remaining])
     session.add_all(samples)
-    retest.status = RetestStatus.RUNNING
-    retest.started_at = utc_now()
     session.commit()
-    return samples
+    return list(
+        session.scalars(
+            select(RetestSample)
+            .where(RetestSample.retest_run_id == run_id)
+            .order_by(RetestSample.cohort, RetestSample.conversation_id)
+        )
+    )
 
 
-def complete_retest(session: Session, run_id: str, actor: str) -> RetestRun:
+def retest_workspace(session: Session) -> dict:
+    pending_publish = _pending_publish_items(session)
+    items = [_retest_item(session, run) for run in session.scalars(select(RetestRun))]
+    summary = {
+        "pending_publish_count": len(pending_publish),
+        "waiting_samples_count": sum(item["workspace_state"] == "waiting_samples" for item in items),
+        "ready_count": sum(item["workspace_state"] == "ready" for item in items),
+        "running_count": sum(
+            item["workspace_state"] in ("running", "interrupted") for item in items
+        ),
+        "recovered_count": sum(item["workspace_state"] == "recovered" for item in items),
+        "not_recovered_count": sum(
+            item["workspace_state"] == "not_recovered" for item in items
+        ),
+    }
+    return {
+        "summary": summary,
+        "pending_publish": pending_publish,
+        "items": sorted(items, key=lambda item: item["published_at"], reverse=True),
+    }
+
+
+def retest_workspace_detail(session: Session, run_id: str) -> dict:
+    run = session.get(RetestRun, run_id)
+    if run is None:
+        raise LookupError("复测任务不存在")
+    return _retest_item(session, run)
+
+
+def execute_retest(
+    session: Session, run_id: str, actor: str, provider: EvaluationProvider
+) -> RetestRun:
+    if not actor.strip():
+        raise InvalidRetestState("操作人不能为空")
+    current = session.scalar(
+        select(RetestRun)
+        .where(RetestRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if current is None:
+        raise LookupError("复测任务不存在")
+    if current.status in (
+        RetestStatus.RECOVERED,
+        RetestStatus.NOT_RECOVERED,
+        RetestStatus.FAILED,
+    ):
+        return current
+    if current.status == RetestStatus.RUNNING:
+        if not _is_stale_running(current):
+            raise InvalidRetestState("复测正在执行，请勿重复启动")
+        current.status = RetestStatus.QUEUED
+        current.execution_token = None
+        record_audit(
+            session,
+            actor=actor,
+            action="retest_execution_resumed",
+            entity_type="retest_run",
+            entity_id=current.id,
+            payload={"reason": "运行超过 30 分钟未更新，按中断任务恢复"},
+        )
+        session.commit()
+    samples = build_retest_sample(session, run_id)
+    retest = session.scalar(
+        select(RetestRun)
+        .where(RetestRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if retest is None:
+        raise LookupError("复测任务不存在")
+    if retest.status == RetestStatus.RUNNING:
+        raise InvalidRetestState("复测正在执行，请勿重复启动")
+    if retest.status != RetestStatus.QUEUED:
+        return retest
+    rule = session.get(RuleVersion, retest.rule_version_id)
+    source_run = _source_run(session, retest)
+    if rule is None or source_run is None:
+        raise LookupError("复测任务缺少原评测版本信息")
+    replay = [sample for sample in samples if sample.cohort == RetestCohort.REPLAY]
+    fresh = [sample for sample in samples if sample.cohort == RetestCohort.NEW]
+    min_replay = int(rule.config.get("retest_min_replay", 1))
+    min_new = int(rule.config.get("retest_min_new", 1))
+    if len(replay) < min_replay:
+        raise InvalidRetestState(f"历史回放样本不足：需要 {min_replay} 条")
+    if len(fresh) < min_new:
+        raise InvalidRetestState(f"新增样本不足：需要 {min_new} 条")
+    if provider.identity.provider != source_run.provider or provider.identity.model != source_run.model:
+        raise InvalidRetestState("当前模型与原评测模型不一致，无法进行可比复测")
+
+    retest.status = RetestStatus.RUNNING
+    retest.started_at = retest.started_at or utc_now()
+    execution_token = new_uuid()
+    retest.execution_token = execution_token
+    evaluation_run = _retest_evaluation_run(session, samples, source_run)
+    session.commit()
+    try:
+        for sample in samples:
+            if sample.retest_evaluation_result_id is not None:
+                continue
+            conversation = session.get(Conversation, sample.conversation_id)
+            if conversation is None:
+                raise LookupError("复测样本对应的对话不存在")
+            request = EvaluationRequest(
+                conversation=redact_conversation(conversation),
+                criteria=dict(rule.config.get("quality_standard", {})),
+                instructions=source_run.prompt_version.content,
+            )
+            retest.started_at = utc_now()
+            session.commit()
+            result = provider.evaluate(request)
+            session.expire_all()
+            current_retest = session.scalar(
+                select(RetestRun)
+                .where(RetestRun.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if (
+                current_retest is None
+                or current_retest.status != RetestStatus.RUNNING
+                or current_retest.execution_token != execution_token
+            ):
+                raise RetestExecutionSuperseded(
+                    "复测已由新的执行接管，旧请求结果已丢弃"
+                )
+            retest = current_retest
+            outcome = calculate_outcome(result, source_run.template)
+            persisted = EvaluationResult(
+                run_id=evaluation_run.id,
+                conversation_id=conversation.id,
+                total_score=Decimal(str(outcome.score)),
+                dimension_scores=result.dimensions,
+                passed=outcome.passed,
+                reason=result.reason,
+                evidence=result.evidence,
+                confidence=_confidence(result.confidence),
+                severe_factual_error=result.severe_factual_error,
+                severe_compliance_error=result.severe_compliance_error,
+            )
+            session.add(persisted)
+            session.flush()
+            sample.retest_evaluation_result_id = persisted.id
+            evaluation_run.succeeded_count += 1
+            session.commit()
+    except RetestExecutionSuperseded as error:
+        session.rollback()
+        raise RetestExecutionError(str(error)) from error
+    except Exception as error:
+        session.rollback()
+        _mark_retest_retryable(
+            session,
+            retest.id,
+            evaluation_run.id,
+            actor,
+            error,
+            execution_token,
+        )
+        raise RetestExecutionError(f"复测请求失败，可直接重试：{error}") from error
+    evaluation_run.status = RunStatus.SUCCEEDED
+    evaluation_run.completed_at = utc_now()
+    record_audit(
+        session,
+        actor=actor,
+        action="retest_evaluation_executed",
+        entity_type="retest_run",
+        entity_id=retest.id,
+        payload={"evaluation_run_id": evaluation_run.id, "sample_count": len(samples)},
+    )
+    session.commit()
+    try:
+        return complete_retest(session, run_id, actor, execution_token)
+    except RetestExecutionSuperseded as error:
+        raise RetestExecutionError(str(error)) from error
+
+
+def _retest_evaluation_run(
+    session: Session, samples: list[RetestSample], source_run: EvaluationRun
+) -> EvaluationRun:
+    existing_result_id = next(
+        (
+            sample.retest_evaluation_result_id
+            for sample in samples
+            if sample.retest_evaluation_result_id is not None
+        ),
+        None,
+    )
+    if existing_result_id is not None:
+        result = session.get(EvaluationResult, existing_result_id)
+        run = session.get(EvaluationRun, result.run_id) if result else None
+        if run is None:
+            raise LookupError("复测结果缺少评测运行记录")
+        run.status = RunStatus.RUNNING
+        return run
+    run = EvaluationRun(
+        template_id=source_run.template_id,
+        prompt_version_id=source_run.prompt_version_id,
+        rule_version_id=source_run.rule_version_id,
+        quality_standard_version_id=source_run.quality_standard_version_id,
+        provider=source_run.provider,
+        model=source_run.model,
+        model_parameters=dict(source_run.model_parameters),
+        status=RunStatus.RUNNING,
+        started_at=utc_now(),
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def _mark_retest_retryable(
+    session: Session,
+    retest_id: str,
+    evaluation_run_id: str,
+    actor: str,
+    error: Exception,
+    execution_token: str,
+) -> None:
+    retest = session.scalar(
+        select(RetestRun)
+        .where(RetestRun.id == retest_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    evaluation_run = session.get(EvaluationRun, evaluation_run_id)
+    if retest is None or evaluation_run is None:
+        raise LookupError("复测失败状态无法保存")
+    if retest.execution_token != execution_token:
+        return
+    retest.status = RetestStatus.QUEUED
+    retest.execution_token = None
+    evaluation_run.status = (
+        RunStatus.PARTIAL if evaluation_run.succeeded_count else RunStatus.FAILED
+    )
+    evaluation_run.completed_at = utc_now()
+    record_audit(
+        session,
+        actor=actor,
+        action="retest_evaluation_failed",
+        entity_type="retest_run",
+        entity_id=retest.id,
+        payload={"evaluation_run_id": evaluation_run.id, "error": str(error)},
+    )
+    session.commit()
+
+
+def complete_retest(
+    session: Session, run_id: str, actor: str, execution_token: str
+) -> RetestRun:
     retest = session.scalar(select(RetestRun).where(RetestRun.id == run_id).with_for_update())
     if retest is None:
         raise LookupError("retest run does not exist")
-    if retest.status not in (RetestStatus.QUEUED, RetestStatus.RUNNING):
+    if retest.execution_token != execution_token:
+        raise RetestExecutionSuperseded("复测已由新的执行接管，旧执行不能结束任务")
+    if retest.status != RetestStatus.RUNNING:
         raise InvalidRetestState("retest run is already complete")
     rule = session.get(RuleVersion, retest.rule_version_id)
     alert = session.get(Alert, retest.alert_id)
@@ -196,6 +523,13 @@ def complete_retest(session: Session, run_id: str, actor: str) -> RetestRun:
             .where(RetestSample.retest_run_id == run_id)
         )
     )
+    sample_count = session.scalar(
+        select(func.count())
+        .select_from(RetestSample)
+        .where(RetestSample.retest_run_id == run_id)
+    )
+    if len(rows) != sample_count:
+        raise InvalidRetestState("仍有复测样本尚未完成，不能提前结束")
     replay = [passed for cohort, passed in rows if cohort == RetestCohort.REPLAY]
     fresh = [passed for cohort, passed in rows if cohort == RetestCohort.NEW]
     decision = decide_retest(
@@ -210,6 +544,7 @@ def complete_retest(session: Session, run_id: str, actor: str) -> RetestRun:
     retest.replay_pass_rate = Decimal(str(decision.replay_pass_rate))
     retest.new_sample_pass_rate = Decimal(str(decision.new_sample_pass_rate))
     retest.completed_at = utc_now()
+    retest.execution_token = None
     retest.status = RetestStatus.RECOVERED if decision.recovered else RetestStatus.NOT_RECOVERED
     alert.status = AlertStatus.RECOVERED if decision.recovered else AlertStatus.NOT_RECOVERED
     task = session.scalar(
@@ -261,3 +596,136 @@ def _cluster_alert(session: Session, cluster_id: str) -> Alert | None:
         .where(ClusterMember.cluster_id == cluster_id)
         .order_by(Alert.created_at.desc())
     )
+
+
+def _pending_publish_items(session: Session) -> list[dict]:
+    published_ids = set(session.scalars(select(RetestRun.qa_version_id)))
+    versions = list(
+        session.scalars(
+            select(QAVersion)
+            .join(QADraft, QADraft.id == QAVersion.draft_id)
+            .where(
+                QADraft.status == QADraftStatus.APPROVED,
+                QAVersion.approved_at.is_not(None),
+                QAVersion.version_number == QADraft.current_version_number,
+            )
+            .order_by(QAVersion.approved_at.desc())
+        )
+    )
+    items = []
+    for version in versions:
+        if version.id in published_ids:
+            continue
+        draft = session.get(QADraft, version.draft_id)
+        cluster = session.get(BadcaseCluster, draft.cluster_id) if draft else None
+        alert = _cluster_alert(session, cluster.id) if cluster else None
+        if draft is None or cluster is None or alert is None:
+            continue
+        items.append(
+            {
+                "qa_version_id": version.id,
+                "version_number": version.version_number,
+                "scenario": cluster.scenario or alert.scenario or "未分类场景",
+                "question": str(version.content.get("question", "")),
+                "answer": str(version.content.get("answer", "")),
+                "approved_by": version.approved_by,
+                "approved_at": version.approved_at.isoformat() if version.approved_at else None,
+                "priority": alert.priority,
+                "impact_count": alert.impact_count,
+            }
+        )
+    return items
+
+
+def _retest_item(session: Session, run: RetestRun) -> dict:
+    alert = session.get(Alert, run.alert_id)
+    version = session.get(QAVersion, run.qa_version_id) if run.qa_version_id else None
+    source_run = _source_run(session, run)
+    rule = session.get(RuleVersion, run.rule_version_id)
+    samples = list(
+        session.scalars(select(RetestSample).where(RetestSample.retest_run_id == run.id))
+    )
+    replay_count = sum(sample.cohort == RetestCohort.REPLAY for sample in samples)
+    new_count = sum(sample.cohort == RetestCohort.NEW for sample in samples)
+    min_replay = int(rule.config.get("retest_min_replay", 1)) if rule else 1
+    min_new = int(rule.config.get("retest_min_new", 1)) if rule else 1
+    audit = session.scalar(
+        select(AuditEvent)
+        .where(
+            AuditEvent.entity_type == "retest_run",
+            AuditEvent.entity_id == run.id,
+            AuditEvent.action == "qa_published",
+        )
+        .order_by(AuditEvent.created_at.desc())
+    )
+    state = _workspace_state(run, replay_count, new_count, min_replay, min_new)
+    return {
+        "id": run.id,
+        "workspace_state": state,
+        "status": run.status.value,
+        "scenario": alert.scenario if alert else "未分类场景",
+        "priority": alert.priority if alert else "P2",
+        "impact_count": alert.impact_count if alert else 0,
+        "qa_version_id": version.id if version else None,
+        "qa_version_number": version.version_number if version else None,
+        "question": str(version.content.get("question", "")) if version else "",
+        "answer": str(version.content.get("answer", "")) if version else "",
+        "published_by": audit.actor if audit else "",
+        "published_at": (audit.created_at if audit else run.created_at).isoformat(),
+        "release_note": str(audit.payload.get("release_note", "")) if audit else "",
+        "replay_samples": {"available": replay_count, "required": min_replay},
+        "new_samples": {"available": new_count, "required": min_new},
+        "before_pass_rate": float(run.before_pass_rate) if run.before_pass_rate is not None else None,
+        "replay_pass_rate": (
+            float(run.replay_pass_rate) if run.replay_pass_rate is not None else None
+        ),
+        "new_sample_pass_rate": (
+            float(run.new_sample_pass_rate) if run.new_sample_pass_rate is not None else None
+        ),
+        "locked_rule": {
+            "rule_version": rule.version if rule else "",
+            "prompt_version": source_run.prompt_version.version if source_run else "",
+            "model": source_run.model if source_run else "",
+            "threshold": float(source_run.template.threshold) if source_run else None,
+            "pass_rate_threshold": (
+                float(rule.config.get("retest_pass_threshold", 0.8)) if rule else None
+            ),
+        },
+    }
+
+
+def _workspace_state(
+    run: RetestRun, replay_count: int, new_count: int, min_replay: int, min_new: int
+) -> str:
+    if run.status == RetestStatus.RECOVERED:
+        return "recovered"
+    if run.status == RetestStatus.NOT_RECOVERED:
+        return "not_recovered"
+    if run.status == RetestStatus.FAILED:
+        return "failed"
+    if run.status == RetestStatus.RUNNING:
+        return "interrupted" if _is_stale_running(run) else "running"
+    if replay_count >= min_replay and new_count >= min_new:
+        return "ready"
+    return "waiting_samples"
+
+
+def _source_run(session: Session, retest: RetestRun) -> EvaluationRun | None:
+    if retest.qa_version_id is None:
+        return None
+    version = session.get(QAVersion, retest.qa_version_id)
+    draft = session.get(QADraft, version.draft_id) if version else None
+    cluster = session.get(BadcaseCluster, draft.cluster_id) if draft else None
+    return session.get(EvaluationRun, cluster.run_id) if cluster else None
+
+
+def _confidence(value: float) -> Confidence:
+    if value >= 0.8:
+        return Confidence.HIGH
+    if value >= 0.5:
+        return Confidence.MEDIUM
+    return Confidence.LOW
+
+
+def _is_stale_running(run: RetestRun) -> bool:
+    return run.started_at is None or run.started_at <= utc_now() - STALE_RETEST_AFTER

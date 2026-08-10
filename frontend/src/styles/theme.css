@@ -16,6 +16,38 @@
   --font-control: 13px;
 }
 
+/* 发布与复测工作台 */
+.retest-summary { margin-top: 20px; display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--ink); color: #edf2ed; background: #17211f; box-shadow: 4px 4px 0 #81908b; }
+.retest-summary > div { min-height: 90px; padding: 20px; border-right: 1px solid #394541; display: flex; align-items: center; gap: 12px; }
+.retest-summary > div:last-child { border: 0; }.retest-summary strong { color: #67d8cf; font: 34px "Avenir Next Condensed", sans-serif; }.retest-summary span { font-weight: 800; }
+.operation-error { margin-top: 18px; padding: 14px 16px; border: 1px solid #e49a87; color: #923d2d; background: #fff0e9; }
+.retest-section { margin-top: 34px; }.retest-section > header { margin-bottom: 14px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.retest-section > header h2 { margin: 5px 0 0; font: 30px "Songti SC", serif; }.retest-section > header > p { max-width: 420px; margin: 0; color: var(--muted); }
+.retest-actor { display: grid; gap: 6px; color: var(--muted); font-weight: 700; }.retest-actor input, .release-list footer input { min-height: 43px; padding: 0 12px; border: 1px solid var(--line); color: var(--ink); background: #fffdf7; outline: 0; }
+.retest-actor input:focus, .release-list footer input:focus { border-color: var(--cyan-dark); }.release-list, .retest-list { display: grid; gap: 13px; }
+.release-list article, .retest-card { border: 1px solid var(--line); background: #fcfaf4; box-shadow: 4px 4px 0 #ddd9ce; }.release-list article { padding: 22px; }
+.retest-card-title { display: flex; align-items: flex-start; gap: 12px; }.retest-card-title small { color: var(--muted); }.retest-card-title h3 { margin: 5px 0 0; font: 23px "Songti SC", serif; }
+.retest-priority { padding: 4px 8px; color: #fff; background: var(--amber); font-weight: 900; }.retest-priority.p1 { background: var(--signal); }.retest-priority.p3 { background: #7f8b87; }
+.release-list dl { margin: 18px 0; display: grid; grid-template-columns: 1fr 1.4fr; gap: 1px; border: 1px solid var(--line); background: var(--line); }.release-list dl > div { padding: 14px; background: #f8f5ed; }
+.release-list dt { color: var(--muted); font-size: var(--font-support); }.release-list dd { margin: 6px 0 0; line-height: 1.6; }.release-list footer { display: grid; grid-template-columns: 1fr auto; gap: 10px; }.release-list footer .primary-button { min-width: 150px; }
+.retest-card { border-left: 5px solid var(--amber); }.retest-card.state-ready, .retest-card.state-recovered { border-left-color: var(--cyan); }.retest-card.state-not_recovered, .retest-card.state-failed { border-left-color: var(--signal); }
+.retest-card > header { padding: 20px 22px; display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }.retest-card > header > b { padding: 7px 10px; border: 1px solid var(--line); color: var(--cyan-dark); background: #eef6f1; }
+.retest-rule-strip { padding: 11px 22px; border-block: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 18px; color: var(--muted); background: #f1eee5; font-size: var(--font-support); }
+.cohort-grid { padding: 20px 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.cohort-grid > div { padding: 16px; border: 1px solid var(--line); background: #fffdf7; }
+.cohort-grid > div.ready { border-color: #83bcb1; background: #edf7f2; }.cohort-grid > div.waiting { border-color: #d7b56f; background: #fff7e3; }.cohort-grid header { display: flex; justify-content: space-between; }
+.cohort-grid header b { color: var(--muted); font-size: var(--font-support); }.cohort-grid p { margin: 7px 0 14px; color: var(--muted); }.cohort-grid > div > span strong { font: 26px "Avenir Next Condensed", sans-serif; }
+.rate-compare { margin: 0 22px; display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); }.rate-compare > div { padding: 13px 16px; border-right: 1px solid var(--line); }.rate-compare > div:last-child { border: 0; }
+.rate-compare span, .rate-compare strong { display: block; }.rate-compare span { color: var(--muted); font-size: var(--font-support); }.rate-compare strong { margin-top: 4px; font: 24px "Avenir Next Condensed", sans-serif; }
+.retest-card > footer { padding: 18px 22px 22px; display: flex; align-items: end; justify-content: space-between; gap: 18px; }.retest-card > footer span, .retest-card > footer small { display: block; }.retest-card > footer small { margin-top: 4px; color: var(--muted); }
+.retest-actions { display: flex; gap: 9px; }.retest-empty { padding: 38px; border: 1px dashed var(--line); color: var(--muted); text-align: center; background: #f8f5ed; }
+
+@media (max-width: 700px) {
+  .retest-summary { grid-template-columns: 1fr 1fr; }.retest-summary > div { border-bottom: 1px solid #394541; }
+  .retest-section > header, .retest-card > footer { align-items: stretch; flex-direction: column; }
+  .release-list dl, .release-list footer, .cohort-grid, .rate-compare { grid-template-columns: 1fr; }
+  .rate-compare > div { border-right: 0; border-bottom: 1px solid var(--line); }.retest-actions { display: grid; grid-template-columns: 1fr; }.retest-actions, .retest-actions button { width: 100%; }
+}
+
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--paper); font-size: var(--font-body); line-height: 1.5; }
 button, a { font: inherit; }
