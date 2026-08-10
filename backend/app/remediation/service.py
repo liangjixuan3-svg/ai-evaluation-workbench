@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,9 +14,10 @@ from app.evaluation.contracts import ProviderAttribution, QADraftContent, QADraf
 from app.evaluation.models import EvaluationResult
 from app.evaluation.providers import EvaluationProvider
 from app.ingestion.redaction import redact_conversation
+from app.issues.service import issue_detail
 from app.remediation.models import QADraft, QAEvidence, QAVersion
 from app.shared.audit import record_audit
-from app.shared.enums import Confidence, QADraftStatus, RootCause, TaskType
+from app.shared.enums import Confidence, QADraftStatus, RootCause, TaskStatus, TaskType
 from app.shared.types import utc_now
 
 ROOT_CAUSE_TASK = {
@@ -46,6 +47,118 @@ class InvalidAttributionRoute(AttributionConfirmationError):
 
 class MissingBusinessEvidence(ValueError):
     pass
+
+
+def list_qa_workspace(session: Session, status: str) -> dict[str, Any]:
+    tasks = list(
+        session.scalars(
+            select(Task)
+            .where(Task.type == TaskType.QA_REVIEW)
+            .order_by(Task.updated_at.desc(), Task.id.desc())
+        )
+    )
+    rows = [_qa_task_row(session, task) for task in tasks]
+    summary = {
+        "awaiting_generation_count": sum(
+            row["state"] == "awaiting_generation" for row in rows
+        ),
+        "pending_review_count": sum(row["state"] == "pending_review" for row in rows),
+        "approved_count": sum(row["state"] == "approved" for row in rows),
+        "rejected_count": sum(row["state"] == "rejected" for row in rows),
+    }
+    if status == "pending":
+        rows = [
+            row for row in rows if row["state"] in {"awaiting_generation", "pending_review"}
+        ]
+    elif status != "all":
+        rows = [row for row in rows if row["state"] == status]
+    return {"summary": summary, "items": rows}
+
+
+def qa_workspace_detail(session: Session, task_id: str) -> dict[str, Any]:
+    task = session.get(Task, task_id)
+    if task is None or task.type != TaskType.QA_REVIEW or task.cluster_id is None:
+        raise LookupError("QA 审核任务不存在")
+    row = _qa_task_row(session, task)
+    problem = issue_detail(session, task.cluster_id)
+    draft = session.scalar(select(QADraft).where(QADraft.task_id == task.id))
+    return {
+        **row,
+        "weakest_dimension": problem["weakest_dimension"],
+        "confirmation": problem["confirmation"],
+        "samples": problem["samples"],
+        "draft": _qa_draft_payload(draft, task.payload.get("qa_rejection_reason")),
+    }
+
+
+def generate_qa_for_task(
+    session: Session, task_id: str, provider: EvaluationProvider
+) -> QADraft:
+    task = session.get(Task, task_id)
+    if task is None or task.type != TaskType.QA_REVIEW or task.cluster_id is None:
+        raise LookupError("QA 审核任务不存在")
+    draft = generate_qa_draft(session, task.cluster_id, provider)
+    if task.status == TaskStatus.OPEN:
+        task.status = TaskStatus.IN_PROGRESS
+        session.commit()
+    return draft
+
+
+def _qa_task_row(session: Session, task: Task) -> dict[str, Any]:
+    if task.cluster_id is None:
+        raise LookupError("QA 审核任务缺少问题簇")
+    cluster = session.get(BadcaseCluster, task.cluster_id)
+    if cluster is None:
+        raise LookupError("QA 审核任务引用的问题簇不存在")
+    draft = session.scalar(select(QADraft).where(QADraft.task_id == task.id))
+    impact_count = session.scalar(
+        select(func.count()).select_from(ClusterMember).where(ClusterMember.cluster_id == cluster.id)
+    )
+    return {
+        "task_id": task.id,
+        "cluster_id": cluster.id,
+        "scenario": cluster.scenario,
+        "problem_summary": cluster.normalized_reason,
+        "impact_count": impact_count or 0,
+        "priority": task.priority,
+        "task_status": task.status.value,
+        "state": _qa_state(draft),
+        "confidence": draft.confidence.value if draft else None,
+        "updated_at": task.updated_at.isoformat(),
+    }
+
+
+def _qa_state(draft: QADraft | None) -> str:
+    if draft is None:
+        return "awaiting_generation"
+    return draft.status.value
+
+
+def _qa_draft_payload(
+    draft: QADraft | None, rejection_reason: Any = None
+) -> dict[str, Any] | None:
+    if draft is None:
+        return None
+    version = draft.current_version
+    return {
+        "id": draft.id,
+        "status": draft.status.value,
+        "confidence": draft.confidence.value,
+        "version_number": version.version_number,
+        "content": version.content,
+        "created_by": version.created_by,
+        "approved_by": version.approved_by,
+        "approved_at": version.approved_at.isoformat() if version.approved_at else None,
+        "rejection_reason": rejection_reason if isinstance(rejection_reason, str) else None,
+        "evidence": [
+            {
+                "source_type": item.source_type,
+                "source_ref": item.source_ref,
+                "excerpt": item.excerpt,
+            }
+            for item in version.evidence
+        ],
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +362,10 @@ def approve_qa(
         _add_business_evidence(session, version, validated_evidence)
         draft.current_version_number = version.version_number
         draft.status = QADraftStatus.APPROVED
+        task = session.get(Task, draft.task_id) if draft.task_id else None
+        if task is not None:
+            task.status = TaskStatus.DONE
+            task.completed_at = utc_now()
         record_audit(
             session,
             actor=actor,
@@ -264,6 +381,33 @@ def approve_qa(
         )
     session.commit()
     return version
+
+
+def reject_qa(session: Session, draft_id: str, actor: str, reason: str) -> QADraft:
+    draft = session.scalar(select(QADraft).where(QADraft.id == draft_id).with_for_update())
+    if draft is None:
+        raise LookupError(f"QA draft {draft_id} does not exist")
+    if not actor.strip() or not reason.strip():
+        raise ValueError("actor and rejection reason are required")
+    if draft.status != QADraftStatus.PENDING_REVIEW:
+        raise ValueError("only pending QA drafts can be rejected")
+    task = session.get(Task, draft.task_id) if draft.task_id else None
+    if task is None:
+        raise LookupError("QA draft task does not exist")
+    draft.status = QADraftStatus.REJECTED
+    task.status = TaskStatus.CANCELLED
+    task.completed_at = utc_now()
+    task.payload = {**task.payload, "qa_rejection_reason": reason.strip()}
+    record_audit(
+        session,
+        actor=actor,
+        action="qa_rejected",
+        entity_type="qa_draft",
+        entity_id=draft.id,
+        payload={"evidence": [], "reason": reason.strip(), "task_id": task.id},
+    )
+    session.commit()
+    return draft
 
 
 def _cluster_confidence(session: Session, cluster_id: str) -> Confidence:
