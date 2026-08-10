@@ -9,6 +9,7 @@ import { QAWorkspacePage } from "../features/qa/QAWorkspacePage";
 import { RetestWorkspacePage } from "../features/retests/RetestWorkspacePage";
 import { RetestDetailPage } from "../features/retests/RetestDetailPage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
+import { CalibrationWorkspacePage } from "../features/calibration/CalibrationWorkspacePage";
 import { QualityStandardPage } from "../features/rules/QualityStandardPage";
 import { QualityStandardVersionPage } from "../features/rules/QualityStandardVersionPage";
 import { EvaluationPromptPage } from "../features/rules/EvaluationPromptPage";
@@ -31,6 +32,7 @@ export function AppRouter() {
         <Route index element={<WorkbenchPage />} />
         <Route path="alerts/*" element={<IssueWorkspacePage />} />
         <Route path="qa/*" element={<QAWorkspacePage />} />
+        <Route path="calibration/*" element={<CalibrationWorkspacePage />} />
         <Route path="retests/:runId" element={<RetestDetailPage />} />
         <Route path="retests/*" element={<RetestWorkspacePage />} />
         <Route path="runs/import" element={<ImportPage />} />

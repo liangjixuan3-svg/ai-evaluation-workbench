@@ -8,6 +8,7 @@ const navigation = [
   ["/runs/import", "数据采集", "05"],
   ["/runs/new", "发起评测", "06"],
   ["/rules", "评测规则", "07"],
+  ["/calibration", "评测校准", "08"],
 ] as const;
 
 export function AppShell() {
