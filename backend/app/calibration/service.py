@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import random
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from app.calibration.contracts import DisagreeReviewInput
 from app.calibration.models import CalibrationBatch, CalibrationReview
 from app.evaluation.models import EvaluationResult, EvaluationRun
-from app.shared.enums import CalibrationSelectionReason, Confidence, RunStatus
-from app.shared.types import new_uuid
+from app.ingestion.redaction import redact_text
+from app.shared.enums import (
+    CalibrationBatchStatus,
+    CalibrationReviewStatus,
+    CalibrationSelectionReason,
+    Confidence,
+    RunStatus,
+)
+from app.shared.types import new_uuid, utc_now
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SCORE_BOUNDARY = Decimal(5)
@@ -22,6 +32,8 @@ _PRIORITY_QUOTAS = (
     (CalibrationSelectionReason.SEVERE_ERROR, 4),
     (CalibrationSelectionReason.RANDOM_SAMPLE, 2),
 )
+
+CalibrationWorkspaceStatus = Literal["pending", "reviewed", "all"]
 
 
 def selection_reason(
@@ -79,6 +91,263 @@ def ensure_today_batch(
             return existing
         raise
     return batch
+
+
+def calibration_workspace(
+    session: Session, status: CalibrationWorkspaceStatus = "pending"
+) -> dict[str, Any]:
+    """Return today's calibration queue without initiating model evaluation."""
+    batch = session.scalar(
+        select(CalibrationBatch).where(CalibrationBatch.batch_date == datetime.now(_SHANGHAI).date())
+    )
+    if batch is None:
+        return {
+            "batch": None,
+            "summary": {
+                "reviewed": 0,
+                "total": 0,
+                "pending": 0,
+                "agreement_rate": None,
+                "top_disagreement_dimension": None,
+            },
+            "items": [],
+        }
+
+    reviews = list(
+        session.scalars(
+            select(CalibrationReview)
+            .where(CalibrationReview.batch_id == batch.id)
+            .order_by(CalibrationReview.created_at, CalibrationReview.id)
+        )
+    )
+    reviews.sort(key=_workspace_sort_key)
+    reviewed = [review for review in reviews if review.status is not CalibrationReviewStatus.PENDING]
+    disagreements = [
+        review.disagreement_dimension.value
+        for review in reviewed
+        if review.disagreement_dimension is not None
+    ]
+    if status == "pending":
+        displayed = [review for review in reviews if review.status is CalibrationReviewStatus.PENDING]
+    elif status == "reviewed":
+        displayed = reviewed
+    else:
+        displayed = reviews
+    return {
+        "batch": {
+            "id": batch.id,
+            "batch_date": batch.batch_date.isoformat(),
+            "target_count": batch.target_count,
+            "status": batch.status.value,
+        },
+        "summary": {
+            "reviewed": len(reviewed),
+            "total": len(reviews),
+            "pending": len(reviews) - len(reviewed),
+            "agreement_rate": (
+                sum(review.agreed is True for review in reviewed) / len(reviewed)
+                if reviewed
+                else None
+            ),
+            "top_disagreement_dimension": _top_disagreement_dimension(disagreements),
+        },
+        "items": [_workspace_item(session, review) for review in displayed],
+    }
+
+
+def calibration_review_detail(session: Session, review_id: str) -> dict[str, Any]:
+    review = session.get(CalibrationReview, review_id)
+    if review is None:
+        raise LookupError("calibration review does not exist")
+    result = session.get(EvaluationResult, review.evaluation_result_id)
+    if result is None:
+        raise LookupError("calibration review evaluation result does not exist")
+    run = session.get(EvaluationRun, result.run_id)
+    if run is None:
+        raise LookupError("calibration review evaluation run does not exist")
+    conversation = result.conversation
+    quality_standard = run.quality_standard_version
+    return {
+        **review_payload(review),
+        "batch": _batch_payload(session.get(CalibrationBatch, review.batch_id)),
+        "conversation": {
+            "id": conversation.id,
+            "external_id": conversation.external_id,
+            "scenario": conversation.scenario,
+            "status": conversation.status,
+            "messages": _redact_json(conversation.body.get("messages", [])),
+        },
+        "evaluation": {
+            "total_score": float(result.total_score),
+            "dimension_scores": result.dimension_scores,
+            "passed": result.passed,
+            "confidence": result.confidence.value,
+            "reason": result.reason,
+            "evidence": result.evidence,
+            "severe_factual_error": result.severe_factual_error,
+            "severe_compliance_error": result.severe_compliance_error,
+        },
+        "locked_rule": {
+            "quality_standard": (
+                {
+                    "id": quality_standard.id,
+                    "version_number": quality_standard.version_number,
+                    "rules": quality_standard.rules,
+                }
+                if quality_standard is not None
+                else None
+            ),
+            "prompt": {
+                "id": run.prompt_version.id,
+                "name": run.prompt_version.name,
+                "version": run.prompt_version.version,
+                "content": run.prompt_version.content,
+            },
+            "model": {
+                "provider": run.provider,
+                "model": run.model,
+                "parameters": run.model_parameters,
+            },
+        },
+    }
+
+
+def agree_with_evaluation(session: Session, review_id: str, actor: str) -> CalibrationReview:
+    review = _review_for_update(session, review_id)
+    if review.status is not CalibrationReviewStatus.PENDING:
+        return review
+    actor = actor.strip()
+    if not actor:
+        raise ValueError("actor is required")
+    review.status = CalibrationReviewStatus.AGREED
+    review.agreed = True
+    review.reviewed_by = actor
+    review.reviewed_at = utc_now()
+    _complete_batch_when_fully_reviewed(session, review.batch_id)
+    session.commit()
+    return review
+
+
+def disagree_with_evaluation(
+    session: Session, review_id: str, input: DisagreeReviewInput
+) -> CalibrationReview:
+    review = _review_for_update(session, review_id)
+    if review.status is not CalibrationReviewStatus.PENDING:
+        return review
+    actor = input.actor.strip()
+    review_basis = input.review_basis.strip()
+    if not actor:
+        raise ValueError("actor is required")
+    if not review_basis:
+        raise ValueError("review_basis is required")
+    if len(review_basis) > 1000:
+        raise ValueError("review_basis must be at most 1000 characters")
+    review.status = CalibrationReviewStatus.CORRECTED
+    review.agreed = False
+    review.corrected_passed = input.corrected_passed
+    review.disagreement_dimension = input.disagreement_dimension
+    review.review_basis = review_basis
+    review.reviewed_by = actor
+    review.reviewed_at = utc_now()
+    review.include_in_regression = True
+    _complete_batch_when_fully_reviewed(session, review.batch_id)
+    session.commit()
+    return review
+
+
+def review_payload(review: CalibrationReview) -> dict[str, Any]:
+    return {
+        "id": review.id,
+        "review_id": review.id,
+        "evaluation_result_id": review.evaluation_result_id,
+        "selection_reason": review.selection_reason.value,
+        "status": review.status.value,
+        "agreed": review.agreed,
+        "corrected_passed": review.corrected_passed,
+        "disagreement_dimension": (
+            review.disagreement_dimension.value if review.disagreement_dimension is not None else None
+        ),
+        "review_basis": review.review_basis,
+        "reviewed_by": review.reviewed_by,
+        "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
+        "include_in_regression": review.include_in_regression,
+    }
+
+
+def _review_for_update(session: Session, review_id: str) -> CalibrationReview:
+    review = session.scalar(
+        select(CalibrationReview).where(CalibrationReview.id == review_id).with_for_update()
+    )
+    if review is None:
+        raise LookupError("calibration review does not exist")
+    return review
+
+
+def _complete_batch_when_fully_reviewed(session: Session, batch_id: str) -> None:
+    batch = session.get(CalibrationBatch, batch_id)
+    if batch is None:
+        raise LookupError("calibration batch does not exist")
+    has_pending = session.scalar(
+        select(
+            exists().where(
+                CalibrationReview.batch_id == batch_id,
+                CalibrationReview.status == CalibrationReviewStatus.PENDING,
+            )
+        )
+    )
+    if not has_pending:
+        batch.status = CalibrationBatchStatus.COMPLETED
+
+
+def _workspace_item(session: Session, review: CalibrationReview) -> dict[str, Any]:
+    result = session.get(EvaluationResult, review.evaluation_result_id)
+    if result is None:
+        raise LookupError("calibration review evaluation result does not exist")
+    return {
+        **review_payload(review),
+        "scenario": result.conversation.scenario,
+        "total_score": float(result.total_score),
+        "passed": result.passed,
+        "confidence": result.confidence.value,
+    }
+
+
+def _workspace_sort_key(review: CalibrationReview) -> tuple[int, str]:
+    priority = {
+        CalibrationSelectionReason.LOW_CONFIDENCE: 0,
+        CalibrationSelectionReason.SCORE_BOUNDARY: 1,
+        CalibrationSelectionReason.SEVERE_ERROR: 2,
+        CalibrationSelectionReason.RANDOM_SAMPLE: 3,
+    }
+    return priority[review.selection_reason], review.id
+
+
+def _top_disagreement_dimension(dimensions: list[str]) -> str | None:
+    if not dimensions:
+        return None
+    counts = Counter(dimensions)
+    return min(counts, key=lambda dimension: (-counts[dimension], dimension))
+
+
+def _batch_payload(batch: CalibrationBatch | None) -> dict[str, Any] | None:
+    if batch is None:
+        return None
+    return {
+        "id": batch.id,
+        "batch_date": batch.batch_date.isoformat(),
+        "target_count": batch.target_count,
+        "status": batch.status.value,
+    }
+
+
+def _redact_json(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, list):
+        return [_redact_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_json(item) for key, item in value.items()}
+    return value
 
 
 def _candidates(

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.alerts.router import router as alerts_router
+from app.calibration.router import router as calibration_router
 from app.dashboard.router import router as dashboard_router
 from app.evaluation.router import router as evaluation_router
 from app.evaluation_prompts.router import router as evaluation_prompts_router
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(evaluation_prompts_router)
     app.include_router(issues_router)
     app.include_router(alerts_router)
+    app.include_router(calibration_router)
     app.include_router(remediation_router)
     app.include_router(retest_router)
     app.include_router(dashboard_router)
