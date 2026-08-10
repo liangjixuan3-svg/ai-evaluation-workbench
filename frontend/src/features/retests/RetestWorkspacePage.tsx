@@ -44,10 +44,20 @@ function Rate({ label, value }: { label: string; value: number | null }) { retur
 
 function RetestCard({ item, busy, onRefresh, onExecute }: { item: RetestItem; busy: string; onRefresh: (id: string) => void; onExecute: (id: string) => void }) {
   const terminal = item.workspace_state === "recovered" || item.workspace_state === "not_recovered";
+  const passRate = item.locked_rule.pass_rate_threshold === null ? "锁定阈值" : `${Math.round(item.locked_rule.pass_rate_threshold * 100)}%`;
   return <article className={`retest-card state-${item.workspace_state}`}>
     <header><Title priority={item.priority} meta={`QA V${item.qa_version_number} · 影响 ${item.impact_count} 条`} scenario={item.scenario} /><b>{STATE_LABELS[item.workspace_state]}</b></header>
     <div className="retest-rule-strip"><span>锁定规则 {item.locked_rule.rule_version}</span><span>Prompt {item.locked_rule.prompt_version}</span><span>{item.locked_rule.model}</span><span>单条得分 {item.locked_rule.threshold ?? "-"} 分</span><span>组通过率 {item.locked_rule.pass_rate_threshold === null ? "-" : `${Math.round(item.locked_rule.pass_rate_threshold * 100)}%`}</span></div>
     <div className="cohort-grid"><Cohort title="历史回放" description="重新检查关联的历史失败问题" {...item.replay_samples} /><Cohort title="发布后新对话" description="验证真实线上回答是否改善" {...item.new_samples} /></div>
+    <section className="retest-method-summary">
+      <header><span className="eyebrow">METHOD</span><h4>怎么复测</h4></header>
+      <dl>
+        <div><dt>样本</dt><dd>历史失败对话回放 + 发布后同场景新对话</dd></div>
+        <div><dt>裁判</dt><dd>{item.locked_rule.rule_version} 公司规则 · Prompt {item.locked_rule.prompt_version} · {item.locked_rule.model}</dd></div>
+        <div><dt>结论</dt><dd>两组都达到 {passRate} 才算改善有效</dd></div>
+      </dl>
+      <a href={`/retests/${item.id}`}>查看复测明细 →</a>
+    </section>
     <div className="rate-compare"><Rate label="发布前" value={item.before_pass_rate} /><Rate label="历史回放" value={item.replay_pass_rate} /><Rate label="新对话" value={item.new_sample_pass_rate} /></div>
     <footer><div><span>{item.published_by} 发布</span><small>{item.release_note || "未填写发布备注"}</small></div>{!terminal && <div className="retest-actions"><button className="secondary-button" disabled={Boolean(busy) || item.workspace_state === "running" || item.workspace_state === "interrupted"} onClick={() => onRefresh(item.id)}>{busy === `refresh:${item.id}` ? "刷新中…" : "刷新样本"}</button><button className="primary-button" disabled={(item.workspace_state !== "ready" && item.workspace_state !== "interrupted") || Boolean(busy)} onClick={() => onExecute(item.id)}>{busy === `execute:${item.id}` ? "评测中…" : item.workspace_state === "interrupted" ? "恢复并继续 →" : "开始复测 →"}</button></div>}</footer>
   </article>;

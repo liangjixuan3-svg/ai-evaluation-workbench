@@ -20,6 +20,49 @@ export interface RetestWorkspace {
   items: RetestItem[];
 }
 
+export interface RetestEvaluation {
+  total_score: number;
+  dimension_scores: Record<string, number>;
+  passed: boolean;
+  reason: string;
+  evidence: string[];
+  confidence: string;
+  severe_factual_error: boolean;
+  severe_compliance_error: boolean;
+}
+
+export interface RetestSampleDetail {
+  id: string;
+  cohort: "replay" | "new";
+  status: "pending" | "completed";
+  external_id: string;
+  scenario: string | null;
+  occurred_at: string;
+  conversation: { messages: Array<{ role: string; content: string }> };
+  evaluation: RetestEvaluation | null;
+}
+
+interface CohortExplanation {
+  passed: number; completed: number; total: number; pass_rate: number | null;
+}
+
+export interface RetestDetail extends RetestItem {
+  method: {
+    sample_selection: { replay: string; new: string };
+    quality_standard: { name: string; version: string; rules: Record<string, unknown> } | null;
+    prompt: { name: string; version: string; content: string } | null;
+    model: string;
+    template: { name: string; version: string; weights: Record<string, number> } | null;
+    single_score_threshold: number | null;
+    cohort_pass_rate_threshold: number | null;
+    retest_rule: { version: string; config: Record<string, unknown> } | null;
+  };
+  explanation: {
+    verdict: string; formula: string; replay: CohortExplanation; new: CohortExplanation;
+  };
+  samples: RetestSampleDetail[];
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { Accept: "application/json", "Content-Type": "application/json", ...init?.headers } });
   if (!response.ok) {
@@ -30,6 +73,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function getRetestWorkspace(): Promise<RetestWorkspace> { return request("/api/retest-workspace"); }
+export function getRetestDetail(runId: string): Promise<RetestDetail> { return request(`/api/retest-workspace/${runId}`); }
 export function publishQA(qaVersionId: string, input: { actor: string; release_note: string }): Promise<{ retest_run_id: string; workspace_state: RetestWorkspaceState }> {
   return request(`/api/qa-versions/${qaVersionId}/publish`, { method: "POST", body: JSON.stringify(input) });
 }

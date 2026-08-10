@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { executeRetest, getRetestWorkspace, publishQA, refreshRetestSamples } from "./retestApi";
+import { executeRetest, getRetestDetail, getRetestWorkspace, publishQA, refreshRetestSamples } from "./retestApi";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -10,17 +10,19 @@ describe("发布与复测 API", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await getRetestWorkspace();
+    await getRetestDetail("retest-1");
     await publishQA("qa-v1", { actor: "林乔", release_note: "知识库已上线" });
     await refreshRetestSamples("retest-1");
     await executeRetest("retest-1", "林乔");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "/api/retest-workspace",
+      "/api/retest-workspace/retest-1",
       "/api/qa-versions/qa-v1/publish",
       "/api/retests/retest-1/refresh-samples",
       "/api/retests/retest-1/execute",
     ]);
-    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({
+    expect(fetchMock.mock.calls[2][1]).toEqual(expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ actor: "林乔", release_note: "知识库已上线" }),
     }));

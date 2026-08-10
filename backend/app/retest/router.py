@@ -8,6 +8,7 @@ from app.config import settings
 from app.db import get_session
 from app.evaluation.openai_compatible import build_evaluation_provider, provider_is_configured
 from app.evaluation.providers import EvaluationProvider
+from app.retest.detail import retest_detail
 from app.retest.service import (
     InvalidRetestState,
     RetestExecutionError,
@@ -53,7 +54,7 @@ def get_retest_workspace_detail(
     run_id: str, session: Annotated[Session, Depends(get_session)]
 ) -> dict:
     try:
-        return retest_workspace_detail(session, run_id)
+        return retest_detail(session, run_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 

@@ -72,5 +72,8 @@ describe("发布与复测工作台", () => {
     expect(html).toContain("deepseek-chat");
     expect(html).toContain("V3");
     expect(html).toContain("组通过率 80%");
+    expect(html).toContain("怎么复测");
+    expect(html).toContain("两组都达到 80% 才算改善有效");
+    expect(html).toContain("查看复测明细");
   });
 });

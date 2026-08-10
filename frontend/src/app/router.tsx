@@ -7,6 +7,7 @@ import { ImportPage } from "../features/imports/ImportPage";
 import { IssueWorkspacePage } from "../features/issues/IssueWorkspacePage";
 import { QAWorkspacePage } from "../features/qa/QAWorkspacePage";
 import { RetestWorkspacePage } from "../features/retests/RetestWorkspacePage";
+import { RetestDetailPage } from "../features/retests/RetestDetailPage";
 import { WorkbenchPage } from "../features/workbench/WorkbenchPage";
 import { QualityStandardPage } from "../features/rules/QualityStandardPage";
 import { QualityStandardVersionPage } from "../features/rules/QualityStandardVersionPage";
@@ -30,6 +31,7 @@ export function AppRouter() {
         <Route index element={<WorkbenchPage />} />
         <Route path="alerts/*" element={<IssueWorkspacePage />} />
         <Route path="qa/*" element={<QAWorkspacePage />} />
+        <Route path="retests/:runId" element={<RetestDetailPage />} />
         <Route path="retests/*" element={<RetestWorkspacePage />} />
         <Route path="runs/import" element={<ImportPage />} />
         <Route path="runs/new" element={<NewEvaluationPage />} />

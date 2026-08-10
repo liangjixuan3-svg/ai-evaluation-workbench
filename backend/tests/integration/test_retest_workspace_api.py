@@ -141,6 +141,12 @@ def test_workspace_lists_publishable_qa_and_registers_release(
     assert payload["items"][0]["replay_samples"] == {"available": 1, "required": 1}
     assert payload["items"][0]["new_samples"] == {"available": 0, "required": 1}
     assert payload["items"][0]["locked_rule"]["pass_rate_threshold"] == 0.8
+    detail = client.get(f"/api/retest-workspace/{published.json()['retest_run_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["explanation"]["verdict"] == "等待发布后新对话样本"
+    assert detail.json()["samples"][0]["status"] == "pending"
+    assert detail.json()["samples"][0]["evaluation"] is None
+    assert detail.json()["samples"][0]["conversation"]["messages"]
 
 
 def test_publishing_same_qa_is_idempotent_after_retest_completed(
@@ -239,13 +245,20 @@ def test_refresh_and_execute_strict_two_cohort_retest(
                 body={
                     "messages": [
                         {"role": "user", "content": "退款什么时候到账？"},
-                        {"role": "assistant", "content": "通常 1 至 3 个工作日原路到账。"},
+                        {"role": "assistant", "content": "通常 1 至 3 个工作日原路到账，可联系 13800138000。"},
                     ]
                 },
                 occurred_at=datetime.now(UTC),
                 created_at=datetime.now(UTC) + timedelta(minutes=1),
             )
         )
+        source_run = session.scalar(
+            select(EvaluationRun)
+            .where(EvaluationRun.status == RunStatus.SUCCEEDED)
+            .order_by(EvaluationRun.created_at)
+        )
+        assert source_run is not None
+        source_run.model = "后来修改的源模型"
         session.commit()
 
     refreshed = client.post(f"/api/retests/{run_id}/refresh-samples")
@@ -263,6 +276,41 @@ def test_refresh_and_execute_strict_two_cohort_retest(
     assert detail.json()["workspace_state"] == "recovered"
     assert detail.json()["locked_rule"]["prompt_version"] == "V1"
     assert detail.json()["locked_rule"]["model"] == "judge-v1"
+    assert detail.json()["method"]["model"] == "judge-v1"
+    assert detail.json()["method"]["sample_selection"] == {
+        "replay": "关联问题中的历史失败对话",
+        "new": "QA 发布后的同场景新对话",
+    }
+    assert detail.json()["explanation"]["formula"] == "历史回放和新对话两组通过率都达标"
+    assert detail.json()["explanation"]["replay"] == {
+        "passed": 1,
+        "completed": 1,
+        "total": 1,
+        "pass_rate": 1.0,
+    }
+    assert detail.json()["explanation"]["new"] == {
+        "passed": 1,
+        "completed": 1,
+        "total": 1,
+        "pass_rate": 1.0,
+    }
+    assert len(detail.json()["samples"]) == 2
+    transcript = str(detail.json()["samples"])
+    assert "13800138000" not in transcript
+    assert "[PHONE]" in transcript
+    sample = detail.json()["samples"][0]
+    assert sample["cohort"] in ("replay", "new")
+    assert sample["conversation"]["messages"]
+    assert sample["evaluation"]["total_score"] == 90.0
+    assert sample["evaluation"]["dimension_scores"]["correctness"] == 90
+    assert sample["evaluation"]["reason"] == "回复符合发布后的规则。"
+    assert sample["evaluation"]["evidence"]
+    assert sample["evaluation"]["confidence"] == "high"
+    assert sample["evaluation"]["severe_factual_error"] is False
+    assert sample["evaluation"]["severe_compliance_error"] is False
+    calls_before_detail_refresh = transport.calls
+    assert client.get(f"/api/retest-workspace/{run_id}").status_code == 200
+    assert transport.calls == calls_before_detail_refresh
 
     with sessions() as session:
         sample_count = session.scalar(
@@ -309,6 +357,24 @@ def test_failed_retest_resumes_without_charging_successful_samples_twice(
     failed = client.post(f"/api/retests/{run_id}/execute", json={"actor": "林乔"})
     assert failed.status_code == 502
     assert failing.calls == 2
+    with sessions() as session:
+        source_run = session.scalar(
+            select(EvaluationRun)
+            .where(EvaluationRun.status == RunStatus.SUCCEEDED)
+            .order_by(EvaluationRun.created_at)
+        )
+        assert source_run is not None
+        replacement_prompt = PromptVersion(
+            name="被替换的 Prompt",
+            version="V99",
+            content="重试前被修改的 Prompt",
+            published_at=datetime.now(UTC),
+        )
+        session.add(replacement_prompt)
+        session.flush()
+        source_run.model = "重试前被修改的源模型"
+        source_run.prompt_version_id = replacement_prompt.id
+        session.commit()
 
     resumed = PassingRetestTransport()
     client.app.dependency_overrides[get_retest_provider] = lambda: EvaluationProvider(resumed)
@@ -317,6 +383,9 @@ def test_failed_retest_resumes_without_charging_successful_samples_twice(
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "recovered"
     assert resumed.calls == 1
+    detail = client.get(f"/api/retest-workspace/{run_id}").json()
+    assert detail["method"]["model"] == "judge-v1"
+    assert detail["method"]["prompt"]["content"] == "请按公司规则评测。"
 
 
 def test_stale_running_retest_can_resume_after_process_interruption(
