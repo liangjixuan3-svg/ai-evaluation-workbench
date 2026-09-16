@@ -10,6 +10,7 @@ import {
   type UploadedImport,
 } from "../../app/importApi";
 import { MappingForm } from "./MappingForm";
+import { isDemoMode } from "../../demo/mode";
 
 export function ImportPage() {
   const navigate = useNavigate();
@@ -86,7 +87,7 @@ export function ImportPage() {
           <label className="file-drop">
             <input type="file" accept="application/json,.json" onChange={(event) => void handleFile(event.target.files?.[0])} />
             <strong>{busy && !uploaded ? "正在解析…" : "点击选择 JSON"}</strong>
-            <small>支持任意嵌套结构，单文件最大 20 MB</small>
+            <small>{isDemoMode ? "演示站仅识别 conversations / records / items 数组，不会真实入库" : "支持任意嵌套结构，单文件最大 20 MB"}</small>
           </label>
         </div>
         <div className="step-status">{uploaded ? `已发现 ${uploaded.candidates.length} 个候选数组` : "等待文件"}</div>

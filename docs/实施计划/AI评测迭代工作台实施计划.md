@@ -1017,4 +1017,4 @@ git commit -m "feat: complete AI quality operations loop"
 - [ ] Run `make demo` and record the alert ID, QA export ID, and recovered retest ID.
 - [ ] Run `cd frontend && npm run build` and record the generated asset summary.
 - [ ] If Docker is available, run `docker compose -f deploy/docker-compose.yml config` and `docker compose -f deploy/docker-compose.yml up --build`; verify `/api/health` and the default task workbench route.
-- [ ] Review the implementation against every acceptance criterion in `docs/产品设计/AI评测迭代工作台.md` before claiming completion.
+- [ ] Review the implementation against every acceptance criterion in `docs/产品设计/00-产品总览/产品总体设计.md` before claiming completion.

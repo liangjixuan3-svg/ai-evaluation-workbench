@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { getQualityStandard, listQualityStandards, parseQualityStandard, publishQualityStandard, saveQualityStandard, uploadQualityStandard, type QualityStandard, type QualityStandardSummary, type StandardRules } from "../../app/qualityStandardApi";
 import { RuleReviewEditor } from "./RuleReviewEditor";
 import { RuleSettingsNav } from "./RuleSettingsNav";
+import { isDemoMode } from "../../demo/mode";
 
 export function visibleQualityStandards(items: QualityStandardSummary[]) {
   return items.filter((item) => item.status === "draft" || Boolean(item.published_version_id));
@@ -53,7 +54,7 @@ export function QualityStandardPage() {
     <RuleSettingsNav />
     <div className="standards-layout">
       <aside className="standards-library"><div className="library-head"><span>标准库</span><strong>{items.length}</strong></div>
-        <label className="standard-upload"><input type="file" accept=".docx,.pdf" disabled={Boolean(busy)} onChange={(event) => { const file = event.target.files?.[0]; if (file) void run("upload", () => uploadQualityStandard(file)); }} /><span>{busy === "upload" ? "正在上传…" : "+ 上传公司标准"}</span></label>
+        <label className="standard-upload"><input type="file" accept=".docx,.pdf" disabled={isDemoMode || Boolean(busy)} onChange={(event) => { const file = event.target.files?.[0]; if (file) void run("upload", () => uploadQualityStandard(file)); }} /><span>{isDemoMode ? "演示站只读，查看示例标准" : busy === "upload" ? "正在上传…" : "+ 上传公司标准"}</span></label>
         {items.map((item) => <button type="button" className={selected?.id === item.id ? "active" : ""} key={item.id} onClick={() => void getQualityStandard(item.id).then((detail) => { setSelected(detail); setRules(detail.draft?.rules ?? null); })}><strong>{item.name}</strong><small>V{item.latest_version} · {item.status === "published" ? "已发布" : "草稿"}</small></button>)}
         {!items.length && <p>还没有标准，先上传一份公司制度。</p>}
       </aside>

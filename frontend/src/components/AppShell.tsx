@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { isDemoMode } from "../demo/mode";
 
 const navigation = [
   ["/", "今日工作台", "01"],
@@ -28,7 +29,7 @@ export function AppShell() {
         </nav>
         <div className="sidebar-foot">
           <span className="pulse" />
-          <div><strong>真实数据模式</strong><small>手动发起评测</small></div>
+          <div><strong>{isDemoMode ? "作品演示模式" : "真实数据模式"}</strong><small>{isDemoMode ? "脱敏模拟数据" : "手动发起评测"}</small></div>
         </div>
       </aside>
       <main className="main-stage">
@@ -37,6 +38,7 @@ export function AppShell() {
           <div className="system-state"><span className="pulse" /> 评测工作台已就绪</div>
           <button className="operator" type="button"><span>林</span> 林乔</button>
         </header>
+        {isDemoMode && <div className="public-demo-banner" role="status"><span>作品演示模式：所有数据及操作均为模拟，不调用真实模型。</span><button type="button" onClick={() => void import("../demo/browser").then(({ resetDemoBrowser }) => resetDemoBrowser())}>恢复初始数据</button></div>}
         <Outlet />
       </main>
     </div>

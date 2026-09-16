@@ -5,6 +5,7 @@ import { getConfirmedImports, type ConfirmedImport } from "../../app/importApi";
 import { getProviderStatus, startEvaluation } from "../../app/evaluationApi";
 import { listEvaluationPrompts, type EvaluationPromptVersion } from "../../app/evaluationPromptApi";
 import { listQualityStandards, type QualityStandardSummary } from "../../app/qualityStandardApi";
+import { isDemoMode } from "../../demo/mode";
 
 export function NewEvaluationPage() {
   const navigate = useNavigate();
@@ -100,7 +101,7 @@ export function NewEvaluationPage() {
             ["random", "纯随机", "用于观察整体质量水位"],
           ].map(([value, label, hint]) => <label key={value} className={strategy === value ? "active" : ""}><input type="radio" name="strategy" value={value} checked={strategy === value} onChange={() => setStrategy(value as typeof strategy)} /><strong>{label}</strong><small>{hint}</small></label>)}</fieldset>
           {standardRules && <div className="standard-snapshot">五维权重：准确 {Math.round(standardRules.weights.correctness * 100)}% · 完整 {Math.round(standardRules.weights.completeness * 100)}% · 相关 {Math.round(standardRules.weights.relevance * 100)}% · 体验 {Math.round(standardRules.weights.service_experience * 100)}% · 合规 {Math.round(standardRules.weights.compliance * 100)}%</div>}
-          <button className="primary-button launch-button" disabled={busy || !importId || !standardVersionId || !promptVersionId || !provider?.configured}>{busy ? "正在创建…" : "启动真实评测 →"}</button>
+          <button className="primary-button launch-button" disabled={busy || !importId || !standardVersionId || !promptVersionId || !provider?.configured}>{busy ? "正在创建…" : isDemoMode ? "启动模拟评测 →" : "启动真实评测 →"}</button>
           {error && <div className="operation-error" role="alert">{error}</div>}
         </form>
         <aside className="readiness-card">

@@ -8,12 +8,15 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:demo": "VITE_APP_MODE=demo VITE_PUBLIC_BASE=/ vite",
     "build": "tsc --noEmit && vite build",
+    "build:demo": "VITE_APP_MODE=demo tsc --noEmit && VITE_APP_MODE=demo vite build",
     "test": "vitest",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.7",
+    "msw": "^2.15.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.1"
@@ -27,5 +30,10 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }
