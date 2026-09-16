@@ -15,4 +15,4 @@
 - 演示模式不得请求真实 `/api`、DeepSeek 或用户数据。
 - 不提交 `.env`、模型密钥、数据库文件、虚拟环境或依赖目录。
 - 真实模式继续使用 BrowserRouter 和现有 API，不修改后端业务逻辑。
-- 项目尚未配置 GitHub remote，实际推送及 Pages 设置需在仓库确定后进行。
+- 项目已连接 GitHub remote，并通过 GitHub Actions 发布到公开 Pages 演示站。

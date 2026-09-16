@@ -4,6 +4,8 @@
 
 本项目支持 GitHub Pages 静态演示模式：工作台、问题归因、QA 审核、发布复测、评测规则和校准均可在浏览器中体验。演示数据和操作都是模拟的，不连接 FastAPI/MySQL，也不调用 DeepSeek。
 
+**在线体验：[打开 AI 评测迭代工作台](https://liangjixuan3-svg.github.io/ai-evaluation-workbench/)**
+
 本地预览演示站：
 
 ```bash
@@ -12,7 +14,7 @@ nvm use 24
 npm run dev:demo
 ```
 
-发布时将仓库推送到 GitHub `main`，在仓库 Settings → Pages → Build and deployment 选择 **GitHub Actions**。工作流成功后，演示地址为 `https://<用户名>.github.io/<仓库名>/`。项目尚未配置 GitHub remote，因此此处不填写尚不存在的在线链接。
+仓库已配置 GitHub Actions：推送到 `main` 后会自动执行测试、构建并更新 GitHub Pages 演示站。
 
 安装、配置、启动和停止方法请见 [使用说明.md](./使用说明.md)。
 
