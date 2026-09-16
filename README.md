@@ -6,10 +6,10 @@
 
 **在线体验：[打开 AI 评测迭代工作台](https://liangjixuan3-svg.github.io/ai-evaluation-workbench/)**
 
-本地预览演示站（在项目根目录打开终端，`cd frontend` 表示进入网页代码文件夹）：
+本地预览演示站（将 `/你的项目完整路径` 替换为电脑上包含 `backend`、`frontend` 的项目根目录完整路径，包括项目文件夹名称；保留双引号及末尾的 `/frontend`）：
 
 ```bash
-cd frontend
+cd "/你的项目完整路径/frontend"
 nvm use 24
 npm run dev:demo
 ```
