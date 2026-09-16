@@ -6,7 +6,7 @@
 
 **在线体验：[打开 AI 评测迭代工作台](https://liangjixuan3-svg.github.io/ai-evaluation-workbench/)**
 
-本地预览演示站：
+本地预览演示站（在项目根目录打开终端，`cd frontend` 表示进入网页代码文件夹）：
 
 ```bash
 cd frontend
@@ -15,6 +15,13 @@ npm run dev:demo
 ```
 
 仓库已配置 GitHub Actions：推送到 `main` 后会自动执行测试、构建并更新 GitHub Pages 演示站。
+
+## 项目目录
+
+- `backend`（后端）：负责数据入库、调用大模型、执行评测和保存结果，使用 Python/FastAPI。真实业务模式需要启动它；在线演示不需要。
+- `frontend`（前端）：负责浏览器中看到的页面、按钮和交互，使用 React/Vite。
+- `docs`（说明文档）：包含产品设计、功能需求和实施计划。
+- `示例数据`：提供用于体验功能的虚构对话和公司质量标准。
 
 安装、配置、启动和停止方法请见 [使用说明.md](./使用说明.md)。
 
